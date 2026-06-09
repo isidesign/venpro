@@ -7,7 +7,7 @@ import {
   ArrowLeft, Menu, Edit2, LayoutDashboard, Coins, Eye, Settings, MapPin, Tag, Package, Image as ImageIcon, X,
   History, HelpCircle, ChevronDown, Camera
 } from 'lucide-react';
-import { Product, Sale, SaleItem, StockTransaction, StoreConfig } from '../types';
+import { Product, Sale, SaleItem, StockTransaction, StoreConfig } from '@/types';
 
 interface EmployeePortalProps {
   products: Product[];

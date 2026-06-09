@@ -8,7 +8,7 @@ import {
   User, Lock, Camera, X, GripVertical, Leaf, Egg, Droplet, Flame, Utensils, Menu,
   Calendar, Bell
 } from 'lucide-react';
-import { Product, Sale, StockTransaction, StoreConfig } from '../types';
+import { Product, Sale, StockTransaction, StoreConfig } from '@/types';
 import { 
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   Legend, BarChart, Bar, Cell 

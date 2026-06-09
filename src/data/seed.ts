@@ -1,4 +1,4 @@
-import { Product, Sale, StockTransaction, StoreConfig } from './types';
+import { Product, Sale, StockTransaction, StoreConfig } from '@/types';
 
 // Default initial products
 export const INITIAL_PRODUCTS: Product[] = [
