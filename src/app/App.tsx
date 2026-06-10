@@ -1,28 +1,53 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import RoleSelection from '@/components/auth/RoleSelection';
 import OwnerPortal from '@/components/owner/OwnerPortal';
 import EmployeePortal from '@/components/employee/EmployeePortal';
 import LoginScreen from '@/components/auth/LoginScreen';
+import { VenproAuthProvider, useVenproAuth } from '@/contexts/VenproAuthContext';
 import { useVenproStorage } from '@/hooks/useVenproStorage';
+import { clearVenproLocalData } from '@/constants/storage';
 
-export default function App() {
+function AppContent() {
   const [selectedRole, setSelectedRole] = useState<'owner' | 'employee' | null>(null);
   const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState(false);
   const [isEmployeeAuthenticated, setIsEmployeeAuthenticated] = useState(false);
+  const { signOut, session, profile, isLoading, isSupabaseEnabled } = useVenproAuth();
 
   const {
     products,
     sales,
     transactions,
     config,
+    industry,
     handleUpdateProducts,
     handleUpdateSales,
     handleUpdateTransactions,
     handleUpdateConfig,
     rehydrateFromStorage,
+    applyOrganizationData,
   } = useVenproStorage();
 
-  const handleLogout = () => {
+  useEffect(() => {
+    if (isLoading || !isSupabaseEnabled || !session || !profile) return;
+
+    // No auto-autenticar mientras el usuario está en el flujo de login/registro
+    if (selectedRole === 'owner' && !isOwnerAuthenticated) return;
+    if (selectedRole === 'employee' && !isEmployeeAuthenticated) return;
+
+    if (profile.role === 'owner') {
+      setSelectedRole('owner');
+      setIsOwnerAuthenticated(true);
+      setIsEmployeeAuthenticated(false);
+    } else if (profile.role === 'employee') {
+      setSelectedRole('employee');
+      setIsEmployeeAuthenticated(true);
+      setIsOwnerAuthenticated(false);
+    }
+  }, [isLoading, isSupabaseEnabled, session, profile, selectedRole, isOwnerAuthenticated, isEmployeeAuthenticated]);
+
+  const handleLogout = async () => {
+    clearVenproLocalData();
+    await signOut();
     setIsOwnerAuthenticated(false);
     setIsEmployeeAuthenticated(false);
     setSelectedRole(null);
@@ -32,18 +57,18 @@ export default function App() {
     setSelectedRole(null);
   };
 
+  if (isLoading && isSupabaseEnabled) {
+    return (
+      <div className="bg-[#f9f9ff] min-h-screen flex items-center justify-center text-[#002A5C] font-bold">
+        Cargando sesión...
+      </div>
+    );
+  }
+
   return (
     <div className="bg-[#f9f9ff] min-h-screen">
       {selectedRole === null ? (
-        <RoleSelection
-          onSelectRole={(role) => {
-            setSelectedRole(role);
-            if (role === 'employee') {
-              rehydrateFromStorage();
-              setIsEmployeeAuthenticated(true);
-            }
-          }}
-        />
+        <RoleSelection onSelectRole={setSelectedRole} />
       ) : selectedRole === 'owner' && !isOwnerAuthenticated ? (
         <LoginScreen
           role="owner"
@@ -51,10 +76,13 @@ export default function App() {
             setSelectedRole(null);
             setIsOwnerAuthenticated(false);
           }}
-          onLoginSuccess={() => {
-            rehydrateFromStorage();
+          onLoginSuccess={(options) => {
+            if (!options?.skipRehydrate) {
+              rehydrateFromStorage();
+            }
             setIsOwnerAuthenticated(true);
           }}
+          onOrganizationBootstrap={applyOrganizationData}
         />
       ) : selectedRole === 'owner' ? (
         <OwnerPortal
@@ -62,11 +90,13 @@ export default function App() {
           sales={sales}
           transactions={transactions}
           config={config}
+          industry={industry}
           onUpdateProducts={handleUpdateProducts}
           onUpdateSales={handleUpdateSales}
           onUpdateTransactions={handleUpdateTransactions}
           onUpdateConfig={handleUpdateConfig}
           onBack={handleBack}
+          onLogout={handleLogout}
         />
       ) : selectedRole === 'employee' && !isEmployeeAuthenticated ? (
         <LoginScreen
@@ -75,10 +105,13 @@ export default function App() {
             setSelectedRole(null);
             setIsEmployeeAuthenticated(false);
           }}
-          onLoginSuccess={() => {
-            rehydrateFromStorage();
+          onLoginSuccess={(options) => {
+            if (!options?.skipRehydrate) {
+              rehydrateFromStorage();
+            }
             setIsEmployeeAuthenticated(true);
           }}
+          onOrganizationBootstrap={applyOrganizationData}
         />
       ) : (
         <EmployeePortal
@@ -86,6 +119,7 @@ export default function App() {
           sales={sales}
           transactions={transactions}
           config={config}
+          industry={industry}
           onUpdateProducts={handleUpdateProducts}
           onUpdateSales={handleUpdateSales}
           onUpdateTransactions={handleUpdateTransactions}
@@ -93,5 +127,13 @@ export default function App() {
         />
       )}
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <VenproAuthProvider>
+      <AppContent />
+    </VenproAuthProvider>
   );
 }

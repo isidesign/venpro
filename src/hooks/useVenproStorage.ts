@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { Product, Sale, StockTransaction, StoreConfig } from '@/types';
+import { useState, useEffect, useCallback } from 'react';
+import { Product, Sale, StockTransaction, StoreConfig, IndustryType } from '@/types';
 import {
   INITIAL_PRODUCTS,
   INITIAL_SALES,
@@ -7,6 +7,15 @@ import {
   DEFAULT_CONFIG,
 } from '@/data/seed';
 import { STORAGE_KEYS } from '@/constants/storage';
+import { useVenproAuth } from '@/contexts/VenproAuthContext';
+import { loadOrganizationData } from '@/services/organizationService';
+import {
+  syncProducts,
+  syncSales,
+  syncTransactions,
+  syncConfig,
+} from '@/services/inventoryService';
+import { parseIndustry } from '@/lib/industry';
 
 function readFromStorage<T>(key: string, fallback: T): T {
   const stored = localStorage.getItem(key);
@@ -22,75 +31,119 @@ function readFromStorage<T>(key: string, fallback: T): T {
   }
 }
 
+function writeLocalData(data: {
+  products: Product[];
+  sales: Sale[];
+  transactions: StockTransaction[];
+  config: StoreConfig;
+  industry: IndustryType;
+}) {
+  localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(data.products));
+  localStorage.setItem(STORAGE_KEYS.sales, JSON.stringify(data.sales));
+  localStorage.setItem(STORAGE_KEYS.transactions, JSON.stringify(data.transactions));
+  localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(data.config));
+  localStorage.setItem(STORAGE_KEYS.industry, data.industry);
+}
+
 export function useVenproStorage() {
+  const { organizationId, isSupabaseEnabled } = useVenproAuth();
   const [products, setProducts] = useState<Product[]>([]);
   const [sales, setSales] = useState<Sale[]>([]);
   const [transactions, setTransactions] = useState<StockTransaction[]>([]);
   const [config, setConfig] = useState<StoreConfig>(DEFAULT_CONFIG);
+  const [industry, setIndustry] = useState<IndustryType>('tienda');
 
-  useEffect(() => {
+  const loadFromLocal = useCallback(() => {
     setProducts(readFromStorage(STORAGE_KEYS.products, INITIAL_PRODUCTS));
     setSales(readFromStorage(STORAGE_KEYS.sales, INITIAL_SALES));
     setTransactions(readFromStorage(STORAGE_KEYS.transactions, INITIAL_TRANSACTIONS));
     setConfig(readFromStorage(STORAGE_KEYS.config, DEFAULT_CONFIG));
+    setIndustry(parseIndustry(localStorage.getItem(STORAGE_KEYS.industry)));
   }, []);
 
-  const handleUpdateProducts = (newProducts: Product[]) => {
+  const loadFromSupabase = useCallback(async (orgId: string) => {
+    const data = await loadOrganizationData(orgId);
+    if (!data) {
+      loadFromLocal();
+      return;
+    }
+
+    setProducts(data.products);
+    setSales(data.sales);
+    setTransactions(data.transactions);
+    setConfig(data.config);
+    setIndustry(data.industry);
+    writeLocalData(data);
+  }, [loadFromLocal]);
+
+  useEffect(() => {
+    if (organizationId && isSupabaseEnabled) {
+      loadFromSupabase(organizationId).catch(() => loadFromLocal());
+      return;
+    }
+    loadFromLocal();
+  }, [organizationId, isSupabaseEnabled, loadFromSupabase, loadFromLocal]);
+
+  const persistProducts = (newProducts: Product[]) => {
     setProducts(newProducts);
     localStorage.setItem(STORAGE_KEYS.products, JSON.stringify(newProducts));
+    if (organizationId) {
+      syncProducts(organizationId, newProducts).catch(console.error);
+    }
   };
 
-  const handleUpdateSales = (newSales: Sale[]) => {
+  const persistSales = (newSales: Sale[]) => {
     setSales(newSales);
     localStorage.setItem(STORAGE_KEYS.sales, JSON.stringify(newSales));
+    if (organizationId) {
+      syncSales(organizationId, newSales).catch(console.error);
+    }
   };
 
-  const handleUpdateTransactions = (newTransactions: StockTransaction[]) => {
+  const persistTransactions = (newTransactions: StockTransaction[]) => {
     setTransactions(newTransactions);
     localStorage.setItem(STORAGE_KEYS.transactions, JSON.stringify(newTransactions));
+    if (organizationId) {
+      syncTransactions(organizationId, newTransactions).catch(console.error);
+    }
   };
 
-  const handleUpdateConfig = (newConfig: StoreConfig) => {
+  const persistConfig = (newConfig: StoreConfig) => {
     setConfig(newConfig);
     localStorage.setItem(STORAGE_KEYS.config, JSON.stringify(newConfig));
+    if (organizationId) {
+      syncConfig(organizationId, newConfig).catch(console.error);
+    }
+  };
+
+  const applyOrganizationData = (data: {
+    products: Product[];
+    sales: Sale[];
+    transactions: StockTransaction[];
+    config: StoreConfig;
+    industry?: IndustryType;
+  }) => {
+    const resolvedIndustry = data.industry ?? parseIndustry(localStorage.getItem(STORAGE_KEYS.industry));
+    setProducts(data.products);
+    setSales(data.sales);
+    setTransactions(data.transactions);
+    setConfig(data.config);
+    setIndustry(resolvedIndustry);
+    writeLocalData({
+      products: data.products,
+      sales: data.sales,
+      transactions: data.transactions,
+      config: data.config,
+      industry: resolvedIndustry,
+    });
   };
 
   const rehydrateFromStorage = () => {
-    const storedProducts = localStorage.getItem(STORAGE_KEYS.products);
-    if (storedProducts) {
-      try {
-        setProducts(JSON.parse(storedProducts));
-      } catch {
-        /* keep current state */
-      }
+    if (organizationId && isSupabaseEnabled) {
+      loadFromSupabase(organizationId).catch(() => loadFromLocal());
+      return;
     }
-
-    const storedSales = localStorage.getItem(STORAGE_KEYS.sales);
-    if (storedSales) {
-      try {
-        setSales(JSON.parse(storedSales));
-      } catch {
-        /* keep current state */
-      }
-    }
-
-    const storedTransactions = localStorage.getItem(STORAGE_KEYS.transactions);
-    if (storedTransactions) {
-      try {
-        setTransactions(JSON.parse(storedTransactions));
-      } catch {
-        /* keep current state */
-      }
-    }
-
-    const storedConfig = localStorage.getItem(STORAGE_KEYS.config);
-    if (storedConfig) {
-      try {
-        setConfig(JSON.parse(storedConfig));
-      } catch {
-        /* keep current state */
-      }
-    }
+    loadFromLocal();
   };
 
   return {
@@ -98,10 +151,12 @@ export function useVenproStorage() {
     sales,
     transactions,
     config,
-    handleUpdateProducts,
-    handleUpdateSales,
-    handleUpdateTransactions,
-    handleUpdateConfig,
+    industry,
+    handleUpdateProducts: persistProducts,
+    handleUpdateSales: persistSales,
+    handleUpdateTransactions: persistTransactions,
+    handleUpdateConfig: persistConfig,
+    applyOrganizationData,
     rehydrateFromStorage,
   };
 }

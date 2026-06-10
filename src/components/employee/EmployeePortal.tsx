@@ -7,13 +7,16 @@ import {
   ArrowLeft, Menu, Edit2, LayoutDashboard, Coins, Eye, Settings, MapPin, Tag, Package, Image as ImageIcon, X,
   History, HelpCircle, ChevronDown, Camera
 } from 'lucide-react';
-import { Product, Sale, SaleItem, StockTransaction, StoreConfig } from '@/types';
+import { Product, Sale, SaleItem, StockTransaction, StoreConfig, IndustryType } from '@/types';
+import { getIndustryWelcomeSubtitle, getIndustryCatalogSubtitle } from '@/lib/industry';
+import VenproWordmark from '@/components/brand/VenproWordmark';
 
 interface EmployeePortalProps {
   products: Product[];
   sales: Sale[];
   transactions: StockTransaction[];
   config: StoreConfig;
+  industry: IndustryType;
   onUpdateProducts: (newProducts: Product[]) => void;
   onUpdateSales: (newSales: Sale[]) => void;
   onUpdateTransactions: (newTransactions: StockTransaction[]) => void;
@@ -27,6 +30,7 @@ export default function EmployeePortal({
   sales,
   transactions,
   config,
+  industry,
   onUpdateProducts,
   onUpdateSales,
   onUpdateTransactions,
@@ -702,9 +706,7 @@ export default function EmployeePortal({
       {/* Top Bar: Dark Navy blue header with title & Profile elements */}
       <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-[#002a5c] flex justify-between items-center px-4 md:px-8 w-full border-b border-white/10 shadow-md">
         <div className="flex items-center gap-4">
-          <h1 className="text-xl md:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-            Venpro
-          </h1>
+          <VenproWordmark className="text-xl md:text-2xl" />
           
           {/* Top navigation for desktop (replaces sidebar) */}
           <nav className="hidden md:flex items-center ml-8 gap-1">
@@ -796,7 +798,7 @@ export default function EmployeePortal({
                         Bienvenido: {config.storeName}
                       </h2>
                       <p className="text-sm text-[#00B8D9] font-sans tracking-wide mt-1 font-bold">
-                        Operación Activa: Almacén y Control de Logística
+                        {getIndustryWelcomeSubtitle(industry)}
                       </p>
                     </div>
                     
@@ -876,7 +878,7 @@ export default function EmployeePortal({
                       <div className="flex items-center justify-between">
                         <div>
                           <h3 className="text-lg font-black text-[#002A5C]">Productos Recientes</h3>
-                          <p className="text-xs text-slate-400 mt-0.5">Control de inventario de prendas y calzado</p>
+                          <p className="text-xs text-slate-400 mt-0.5">{getIndustryCatalogSubtitle(industry)}</p>
                         </div>
                         
                         {/* Selector/Filters */}
@@ -1031,7 +1033,8 @@ export default function EmployeePortal({
                         </div>
                       )}
 
-                      {/* Variants Matrix Panel */}
+                      {/* Variants Matrix Panel (solo tienda de ropa) */}
+                      {industry === 'tienda' && (
                       <div className="bg-white border border-slate-100 rounded-2xl shadow-sm p-6 space-y-4">
                         <div className="border-b border-slate-100 pb-3 flex justify-between items-center">
                           <div>
@@ -1153,6 +1156,7 @@ export default function EmployeePortal({
                           </table>
                         </div>
                       </div>
+                      )}
                     </div>
 
                     {/* Right column (Span 4) - Timeline / Movement History */}

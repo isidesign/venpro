@@ -1,16 +1,62 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'motion/react';
-import { Eye, EyeOff, ArrowLeft, Building2, User, Users, Network, Mail, Lock, BarChart3, ShieldCheck, Utensils, Shirt, CheckCircle2, Coins, Check, Delete, UserPlus, Wifi, History, Share2, Download, Plus, X, Info, Briefcase, ChevronDown, MessageSquare, Smartphone, Settings, LayoutDashboard } from 'lucide-react';
+import { Eye, EyeOff, ArrowLeft, Building2, User, Users, Network, Mail, Lock, BarChart3, ShieldCheck, Utensils, Shirt, CheckCircle2, Coins, Check, Delete, UserPlus, Wifi, History, Share2, Download, Plus, X, Info, Briefcase, ChevronDown, MessageSquare, Smartphone, Settings, LayoutDashboard, Phone } from 'lucide-react';
 import { Html5Qrcode } from 'html5-qrcode';
+import { useVenproAuth } from '@/contexts/VenproAuthContext';
+import {
+  signIn,
+  signUpOwner,
+  signUpEmployee,
+  AuthError,
+  isSupabaseConfigured,
+  fetchUserProfile,
+} from '@/services/authService';
+import { createOrganizationWithDatabase, loadOrganizationData, validateInviteCode } from '@/services/organizationService';
+import { parseInviteCodeFromQr } from '@/lib/inviteQr';
+import {
+  sendVerificationCode,
+  verifyVerificationCode,
+  clearVerificationState,
+  maskEmail,
+  maskPhone,
+  VerificationError,
+} from '@/services/verificationService';
+import { getIndustrySeedData } from '@/data/industrySeeds';
+import { getIndustryDefaultConfig, getIndustryDefaultStoreName } from '@/lib/industry';
+import type { IndustryType, Product, Sale, StockTransaction, StoreConfig } from '@/types';
+import { STORAGE_KEYS, clearVenproLocalData } from '@/constants/storage';
+import VenproWordmark from '@/components/brand/VenproWordmark';
+import {
+  COUNTRY_PHONE_CODES,
+  formatRegistrationPhone,
+  isValidRegistrationPhone,
+} from '@/lib/phone';
+
+function isValidRegistrationPassword(password: string): boolean {
+  return password.length >= 8 && /\d/.test(password);
+}
 
 interface LoginScreenProps {
   role?: 'owner' | 'employee';
   onBack: () => void;
-  onLoginSuccess: () => void;
+  onLoginSuccess: (options?: { skipRehydrate?: boolean }) => void;
+  onOrganizationBootstrap?: (data: {
+    products: Product[];
+    sales: Sale[];
+    transactions: StockTransaction[];
+    config: StoreConfig;
+    industry: IndustryType;
+  }) => void;
 }
 
-export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: LoginScreenProps) {
-  const [isRegisterMode, setIsRegisterMode] = useState(false);
+export default function LoginScreen({
+  role = 'owner',
+  onBack,
+  onLoginSuccess,
+  onOrganizationBootstrap,
+}: LoginScreenProps) {
+  const { refreshProfile } = useVenproAuth();
+  const [isRegisterMode, setIsRegisterMode] = useState(role === 'employee');
   const [email, setEmail] = useState('ejemplo@venpro.com');
   const [password, setPassword] = useState('password123');
   const [showPassword, setShowPassword] = useState(false);
@@ -21,11 +67,129 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
   const [regBusiness, setRegBusiness] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
+  const [regPasswordConfirm, setRegPasswordConfirm] = useState('');
+  const [regPhoneCountryCode, setRegPhoneCountryCode] = useState('+52');
+  const [regPhoneNumber, setRegPhoneNumber] = useState('');
+  const [showPasswordConfirm, setShowPasswordConfirm] = useState(false);
   const [regRole, setRegRole] = useState<'owner' | 'employee'>('owner');
   const [regCargo, setRegCargo] = useState('');
+  const [pendingEmployeeRegistration, setPendingEmployeeRegistration] = useState<{
+    name: string;
+    email: string;
+    password: string;
+    cargo: string;
+  } | null>(null);
+  const employeeScanProcessingRef = useRef(false);
+  const employeeScannedRef = useRef(false);
+
+  const pendingEmployeeRegistrationRef = useRef(pendingEmployeeRegistration);
+  pendingEmployeeRegistrationRef.current = pendingEmployeeRegistration;
+
+  const completeEmployeeRegistration = async (inviteCode: string) => {
+    const pending = pendingEmployeeRegistrationRef.current;
+    if (!pending) {
+      throw new AuthError('No hay datos de registro pendientes. Vuelve atrás e intenta de nuevo.');
+    }
+
+    if (isSupabaseConfigured) {
+      const { user, organizationId } = await signUpEmployee({
+        email: pending.email,
+        password: pending.password,
+        fullName: pending.name,
+        cargo: pending.cargo,
+        inviteCode,
+      });
+
+      if (!user) {
+        throw new AuthError('No se pudo crear la cuenta de empleado.');
+      }
+
+      await refreshProfile();
+      if (organizationId) {
+        const orgData = await loadOrganizationData(organizationId);
+        if (orgData) {
+          onOrganizationBootstrap?.({
+            products: orgData.products,
+            sales: orgData.sales,
+            transactions: orgData.transactions,
+            config: orgData.config,
+            industry: orgData.industry,
+          });
+        }
+      }
+    } else {
+      const ownerInviteCode = localStorage.getItem('venpro_invite_code');
+      if (!ownerInviteCode || ownerInviteCode.toLowerCase() !== inviteCode.toLowerCase()) {
+        throw new AuthError('El código QR no coincide con el negocio del propietario.');
+      }
+
+      const currentEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
+      currentEmployees.push({
+        name: pending.name,
+        email: pending.email,
+        password: pending.password,
+        cargo: pending.cargo,
+      });
+      localStorage.setItem('venpro_employees', JSON.stringify(currentEmployees));
+    }
+
+    setPendingEmployeeRegistration(null);
+    onLoginSuccess({ skipRehydrate: isSupabaseConfigured });
+  };
+
+  const handleEmployeeQrScanned = async (decodedText: string) => {
+    if (employeeScanProcessingRef.current || employeeScannedRef.current) return;
+
+    const inviteCode = parseInviteCodeFromQr(decodedText);
+    if (!inviteCode) {
+      setEmployeeScannerError('Código QR no reconocido. Escanea el QR del panel del propietario.');
+      return;
+    }
+
+    employeeScanProcessingRef.current = true;
+    setEmployeeScannerError('');
+
+    try {
+      const organizationId = await validateInviteCode(inviteCode);
+      if (!organizationId) {
+        employeeScanProcessingRef.current = false;
+        setEmployeeScannerError('Este QR no pertenece a un negocio Venpro activo. Pide al propietario que lo genere de nuevo.');
+        return;
+      }
+
+      setIsScanned(true);
+      employeeScannedRef.current = true;
+      if (navigator.vibrate) {
+        navigator.vibrate(200);
+      }
+
+      setTimeout(async () => {
+        try {
+          await completeEmployeeRegistration(inviteCode);
+        } catch (err) {
+          setIsScanned(false);
+          employeeScannedRef.current = false;
+          setEmployeeScannerError(
+            err instanceof AuthError
+              ? err.message
+              : 'No se pudo vincular tu cuenta con el negocio. Intenta de nuevo.',
+          );
+        } finally {
+          employeeScanProcessingRef.current = false;
+        }
+      }, 1500);
+    } catch (err) {
+      employeeScanProcessingRef.current = false;
+      setEmployeeScannerError(
+        err instanceof AuthError
+          ? err.message
+          : 'No se pudo validar el código QR. Intenta de nuevo.',
+      );
+    }
+  };
   
   // Multi-step Configuration Wizard State
-  const [currentStep, setCurrentStep] = useState(0); // 0 = standard forms, 1 = Configura tu negocio, 2 = Estructura del negocio, 3 = Gestiona tu equipo, 4 = Facturación, 5 = Pin / Seguridad
+  const [currentStep, setCurrentStep] = useState(0); // 0 = registro, 1 = industria, 2 = estructura, 3 = equipo/sucursales, 4 = verificación, 5 = facturación, 6 = PIN
   const [selectedIndustry, setSelectedIndustry] = useState<'restaurante' | 'tienda' | null>(null);
   const [businessStructure, setBusinessStructure] = useState<'autonomo' | 'mediana' | 'sucursales'>('mediana');
   const [showInvitarQR, setShowInvitarQR] = useState(false);
@@ -54,6 +218,106 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
   const [authMethod, setAuthMethod] = useState<'sms' | 'email'>('sms');
   const [otp, setOtp] = useState<string[]>(['', '', '', '', '', '']);
   const otpRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const [verificationSent, setVerificationSent] = useState(false);
+  const [isSendingCode, setIsSendingCode] = useState(false);
+  const [isVerifyingCode, setIsVerifyingCode] = useState(false);
+  const [verificationMessage, setVerificationMessage] = useState('');
+  const [verificationError, setVerificationError] = useState('');
+  const [demoVerificationCode, setDemoVerificationCode] = useState<string | null>(null);
+
+  const resetVerificationFlow = () => {
+    setVerificationSent(false);
+    setVerificationMessage('');
+    setVerificationError('');
+    setDemoVerificationCode(null);
+    setOtp(['', '', '', '', '', '']);
+    clearVerificationState();
+  };
+
+  const handleAuthMethodChange = (method: 'sms' | 'email') => {
+    if (method !== authMethod) {
+      setAuthMethod(method);
+      resetVerificationFlow();
+    }
+  };
+
+  const handleSendVerificationCode = async () => {
+    setVerificationError('');
+    setVerificationMessage('');
+    setDemoVerificationCode(null);
+    setIsSendingCode(true);
+
+    try {
+      const result = await sendVerificationCode({
+        method: authMethod,
+        email: regEmail,
+        phoneCountryCode: regPhoneCountryCode,
+        phoneNumber: regPhoneNumber,
+      });
+
+      setVerificationSent(true);
+      setOtp(['', '', '', '', '', '']);
+
+      const destinationLabel =
+        authMethod === 'email'
+          ? maskEmail(regEmail)
+          : maskPhone(regPhoneNumber);
+
+      if (result.usedSupabase) {
+        setVerificationMessage(
+          `Código enviado a ${destinationLabel}. Revisa tu ${authMethod === 'email' ? 'correo' : 'teléfono'}.`,
+        );
+      } else {
+        setVerificationMessage(`Código generado para ${destinationLabel}.`);
+        if (result.demoCode) {
+          setDemoVerificationCode(result.demoCode);
+        }
+      }
+    } catch (err) {
+      setVerificationError(
+        err instanceof VerificationError
+          ? err.message
+          : 'No se pudo enviar el código. Intenta de nuevo.',
+      );
+    } finally {
+      setIsSendingCode(false);
+    }
+  };
+
+  const handleVerifyAndFinish = async () => {
+    const filledCode = otp.join('');
+    if (filledCode.length < 6) {
+      setVerificationError('Por favor ingresa el código de 6 dígitos que has recibido.');
+      return;
+    }
+
+    if (!verificationSent) {
+      setVerificationError('Primero envía el código de verificación.');
+      return;
+    }
+
+    setVerificationError('');
+    setIsVerifyingCode(true);
+
+    try {
+      await verifyVerificationCode({
+        method: authMethod,
+        email: regEmail,
+        phoneCountryCode: regPhoneCountryCode,
+        phoneNumber: regPhoneNumber,
+        code: filledCode,
+      });
+      await handleFinishConfiguration();
+    } catch (err) {
+      setVerificationError(
+        err instanceof VerificationError
+          ? err.message
+          : 'No se pudo verificar el código. Intenta de nuevo.',
+      );
+    } finally {
+      setIsVerifyingCode(false);
+    }
+  };
 
   const handleOtpChange = (value: string, index: number) => {
     const cleaned = value.replace(/[^0-9]/g, '');
@@ -174,8 +438,10 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
 
     if (showEmployeeQRScanner) {
       setIsScanned(false);
+      employeeScannedRef.current = false;
       setIsEmployeeCameraActive(false);
       setEmployeeScannerError(null);
+      employeeScanProcessingRef.current = false;
 
       // Give DOM time to mount the element #employee-qr-reader
       fallbackTimeout = setTimeout(() => {
@@ -196,18 +462,7 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
                 }
               },
               (decodedText) => {
-                // Success: QR Code scanned!
-                console.log('QR Code escaneado con éxito:', decodedText);
-                setIsScanned(true);
-
-                if (navigator.vibrate) {
-                  navigator.vibrate(200);
-                }
-
-                // Wait 1.5 seconds for visual success and go to dashboard
-                setTimeout(() => {
-                  onLoginSuccess();
-                }, 1500);
+                void handleEmployeeQrScanned(decodedText);
               },
               () => {
                 // Silently parse next frame
@@ -219,14 +474,14 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
               console.warn('Real camera not started:', err);
               setEmployeeScannerError(
                 err?.message?.includes('Permission') || err?.name === 'NotAllowedError'
-                  ? 'Permiso de cámara bloqueado. Te sugerimos conceder permisos o usar el simulador de abajo.'
-                  : 'No se pudo iniciar la cámara web de tu dispositivo. Usa el botón simulador para continuar.'
+                  ? 'Permiso de cámara bloqueado. Concede acceso a la cámara para escanear el QR del propietario.'
+                  : 'No se pudo iniciar la cámara. Concede permisos e intenta de nuevo.',
               );
               setIsEmployeeCameraActive(false);
             });
           } catch (e) {
             console.error('Error creating Html5Qrcode instance:', e);
-            setEmployeeScannerError('Ocurrió un error al configurar la cámara. Te sugerimos simular la entrada.');
+            setEmployeeScannerError('Ocurrió un error al configurar la cámara. Recarga la página e intenta de nuevo.');
             setIsEmployeeCameraActive(false);
           }
         }
@@ -244,13 +499,13 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
       }
       employeeQrScannerRef.current = null;
     };
-  }, [showEmployeeQRScanner, onLoginSuccess]);
+  }, [showEmployeeQRScanner]);
 
   const [error, setError] = useState('');
   const [successMsg, setSuccessMsg] = useState('');
   const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email) {
       setError('Por favor, ingresa tu correo electrónico.');
@@ -262,75 +517,121 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
     }
     setError('');
     setIsLoading(true);
-    
-    // Simulate a minor loading transition to make the interaction feel premium
-    setTimeout(() => {
-      setIsLoading(false);
-      
-      if (role === 'employee') {
+
+    try {
+      if (isSupabaseConfigured) {
+        const { user } = await signIn(email, password);
+        if (!user) {
+          setError('No se pudo iniciar sesión.');
+          return;
+        }
+
+        const profile = await fetchUserProfile(user.id);
+        if (!profile) {
+          setError('Perfil de usuario no encontrado. Completa el registro primero.');
+          return;
+        }
+
+        if (profile.role !== role) {
+          setError(
+            role === 'owner'
+              ? 'Esta cuenta no es de propietario. Usa el portal de empleado.'
+              : 'Esta cuenta no es de empleado. Usa el portal de propietario.',
+          );
+          return;
+        }
+
+        if (role === 'owner') {
+          if (profile.fullName) {
+            localStorage.setItem(STORAGE_KEYS.ownerProfileName, profile.fullName);
+          }
+          if (profile.email) {
+            localStorage.setItem(STORAGE_KEYS.ownerProfileEmail, profile.email);
+          }
+        }
+
+        await refreshProfile();
+      } else if (role === 'employee') {
         const storedEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
-        const matched = storedEmployees.find((emp: any) => emp.email === email && emp.password === password);
-        
-        // Match default employee account or custom registered ones
-        const isDefault = (email === 'ejemplo@venpro.com' && password === 'password123') ||
-                          (email === 'empleado@venpro.com') ||
-                          (email === 'password123'); // allow standard defaults
-                          
+        const matched = storedEmployees.find((emp: { email: string; password: string }) => emp.email === email && emp.password === password);
+
+        const isDefault =
+          (email === 'ejemplo@venpro.com' && password === 'password123') ||
+          email === 'empleado@venpro.com' ||
+          email === 'password123';
+
         if (!matched && !isDefault) {
           setError('Credenciales inválidas para acceso de empleado.');
           return;
         }
       }
-      
+
       onLoginSuccess();
-    }, 600);
+    } catch (err) {
+      setError(err instanceof AuthError ? err.message : 'Error al iniciar sesión.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRegisterSubmit = (e: React.FormEvent) => {
+  const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
+
     if (role === 'employee') {
       if (!regEmail || !regPassword || !regName || !regCargo) {
         setError('Por favor, completa todos los campos requeridos, incluyendo tu cargo.');
         return;
       }
+
       setError('');
       setIsLoading(true);
 
-      setTimeout(() => {
-        setIsLoading(false);
-        const currentEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
-        currentEmployees.push({ 
-          name: regName, 
-          email: regEmail, 
+      try {
+        setPendingEmployeeRegistration({
+          name: regName.trim(),
+          email: regEmail.trim(),
           password: regPassword,
-          cargo: regCargo
+          cargo: regCargo,
         });
-        localStorage.setItem('venpro_employees', JSON.stringify(currentEmployees));
-        
-        // Redirect to QR Scanner mode
         setShowEmployeeQRScanner(true);
-        setIsScanned(false); // Reset scanned state
-        
-        // Clear reg form
+        setIsScanned(false);
+        setEmployeeScannerError(null);
         setRegName('');
         setRegEmail('');
         setRegPassword('');
         setRegCargo('');
-      }, 700);
+      } finally {
+        setIsLoading(false);
+      }
       return;
     }
 
-    if (!regEmail || !regPassword || !regName || !regBusiness) {
+    if (!regEmail || !regPassword || !regPasswordConfirm || !regName || !regBusiness || !regPhoneNumber.trim()) {
       setError('Por favor, completa todos los campos requeridos.');
       return;
     }
+
+    if (!isValidRegistrationPassword(regPassword)) {
+      setError('La contraseña debe tener al menos 8 caracteres e incluir un número.');
+      return;
+    }
+
+    if (regPassword !== regPasswordConfirm) {
+      setError('Las contraseñas no coinciden. Verifica e intenta de nuevo.');
+      return;
+    }
+
+    if (!isValidRegistrationPhone(regPhoneNumber)) {
+      setError('Ingresa un número de teléfono válido (7 a 15 dígitos).');
+      return;
+    }
+
     setError('');
     setIsLoading(true);
 
     setTimeout(() => {
+      clearVenproLocalData();
       setIsLoading(false);
-      // Transition to business configuration step 1
       setCurrentStep(1);
     }, 650);
   };
@@ -349,409 +650,255 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
     setConfigPin('');
   };
 
-  const handleFinishConfiguration = () => {
+  const handleFinishConfiguration = async () => {
     setIsLoading(true);
     setError('');
 
-    setTimeout(() => {
-      try {
-        // 1. Build and save the store configuration
-        const finalConfig = {
-          storeName: regBusiness || 'Venpro Negocio',
-          currencySymbol: configCurrency || '$',
-          address: 'Av. Principal #100, Bodega Central',
-          phone: '+1 555-019-3829',
-          taxRate: Number(configTax) || 0,
-          ownerAccessPin: configPin || '1234'
-        };
-        localStorage.setItem('venpro_config', JSON.stringify(finalConfig));
-        localStorage.setItem('venpro_business_structure', businessStructure);
+    const industry: IndustryType = selectedIndustry || 'tienda';
+    const industryDefaults = getIndustryDefaultConfig(industry);
 
-        // 2. Build and save seeded products, sales & transactions based on chosen industry
-        if (selectedIndustry === 'restaurante') {
-          const RESTAURANT_SEEDS = [
-            {
-              id: 'rest-1',
-              code: '1001001',
-              name: 'Hamburguesa Doble de Res con Queso',
-              category: 'Platillos',
-              buyPrice: 3.50,
-              sellPrice: 8.99,
-              quantity: 40,
-              minStock: 10,
-              location: 'Cocina - Estación Fría',
-              image: 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'rest-2',
-              code: '1001002',
-              name: 'Papas Fritas Gourmet Familiar',
-              category: 'Acompañamientos',
-              buyPrice: 1.20,
-              sellPrice: 3.50,
-              quantity: 85,
-              minStock: 20,
-              location: 'Cocina - Freidora',
-              image: 'https://images.unsplash.com/photo-1576107232684-1279f390859f?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'rest-3',
-              code: '1001003',
-              name: 'Pizza Familiar de Pepperoni',
-              category: 'Platillos',
-              buyPrice: 4.80,
-              sellPrice: 12.50,
-              quantity: 15,
-              minStock: 5,
-              location: 'Estación de Hornos',
-              image: 'https://images.unsplash.com/photo-1513104890138-7c749659a591?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'rest-4',
-              code: '1001004',
-              name: 'Refresco Cola Premium 500ml',
-              category: 'Bebidas',
-              buyPrice: 0.60,
-              sellPrice: 1.80,
-              quantity: 120,
-              minStock: 30,
-              location: 'Refrigerador Bebidas A',
-              image: 'https://images.unsplash.com/photo-1622483767028-3f66f32aef97?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'rest-5',
-              code: '1001005',
-              name: 'Ensalada César con Pollo Grill',
-              category: 'Platillos',
-              buyPrice: 2.10,
-              sellPrice: 6.99,
-              quantity: 8,
-              minStock: 12,
-              location: 'Cocina - Estación Fría',
-              image: 'https://images.unsplash.com/photo-1550304943-4f24f54ddde9?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'rest-6',
-              code: '1001006',
-              name: 'Tarta de Chocolate Fudge Porción',
-              category: 'Postres',
-              buyPrice: 1.10,
-              sellPrice: 3.99,
-              quantity: 22,
-              minStock: 8,
-              location: 'Vitrina Exhibidora Dulce',
-              image: 'https://images.unsplash.com/photo-1549007994-cb92ca813b72?w=150&auto=format&fit=crop&q=60'
-            }
-          ];
+    const finalConfig: StoreConfig = {
+      storeName: regBusiness.trim() || getIndustryDefaultStoreName(industry),
+      currencySymbol: configCurrency || industryDefaults.currencySymbol,
+      address: industryDefaults.address,
+      phone: formatRegistrationPhone(regPhoneCountryCode, regPhoneNumber),
+      taxRate: Number(configTax) || industryDefaults.taxRate,
+      ownerAccessPin: configPin || industryDefaults.ownerAccessPin,
+    };
 
-          const RESTAURANT_SALES = [
-            {
-              id: 'rest-sale-1',
-              date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-              items: [
-                { productId: 'rest-1', name: 'Hamburguesa Doble de Res con Queso', quantity: 2, sellPrice: 8.99, buyPrice: 3.50 },
-                { productId: 'rest-4', name: 'Refresco Cola Premium 500ml', quantity: 2, sellPrice: 1.80, buyPrice: 0.60 }
-              ],
-              totalAmount: 21.58,
-              responsible: 'Empleado',
-              paymentMethod: 'Efectivo'
-            },
-            {
-              id: 'rest-sale-2',
-              date: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-              items: [
-                { productId: 'rest-3', name: 'Pizza Familiar de Pepperoni', quantity: 1, sellPrice: 12.50, buyPrice: 4.80 },
-                { productId: 'rest-6', name: 'Tarta de Chocolate Fudge Porción', quantity: 2, sellPrice: 3.99, buyPrice: 1.10 }
-              ],
-              totalAmount: 20.48,
-              responsible: 'Propietario',
-              paymentMethod: 'Tarjeta'
-            }
-          ];
+    try {
+      if (isSupabaseConfigured) {
+        const { user } = await signUpOwner({
+          email: regEmail,
+          password: regPassword,
+          fullName: regName,
+        });
 
-          const RESTAURANT_TX = [
-            {
-              id: 'rest-tr-1',
-              productId: 'rest-1',
-              productName: 'Hamburguesa Doble de Res con Queso',
-              type: 'addition',
-              quantity: 42,
-              reason: 'Inventario de apertura de cocina',
-              date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-              responsible: 'Propietario'
-            },
-            {
-              id: 'rest-tr-2',
-              productId: 'rest-5',
-              productName: 'Ensalada César con Pollo Grill',
-              type: 'addition',
-              quantity: 8,
-              reason: 'Preparación de porciones del día',
-              date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-              responsible: 'Propietario'
-            }
-          ];
-
-          localStorage.setItem('venpro_products', JSON.stringify(RESTAURANT_SEEDS));
-          localStorage.setItem('venpro_sales', JSON.stringify(RESTAURANT_SALES));
-          localStorage.setItem('venpro_transactions', JSON.stringify(RESTAURANT_TX));
-        } else {
-          const CLOTHING_SEEDS = [
-            {
-              id: 'cl-1',
-              code: '2001001',
-              name: 'Camiseta Algodón Orgánico Básica (M - Azul)',
-              category: 'Camisetas',
-              buyPrice: 4.20,
-              sellPrice: 14.99,
-              quantity: 50,
-              minStock: 15,
-              location: 'Estante Exhibición Principal A',
-              image: 'https://images.unsplash.com/photo-1521572267360-ee0c2909d518?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'cl-2',
-              code: '2001002',
-              name: 'Jeans Denim Slim Fit (Talla 32 - Gris)',
-              category: 'Pantalones',
-              buyPrice: 11.50,
-              sellPrice: 34.99,
-              quantity: 28,
-              minStock: 10,
-              location: 'Muro Pantalones B',
-              image: 'https://images.unsplash.com/photo-1542272604-787c3835535d?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'cl-3',
-              code: '2001003',
-              name: 'Sudadera Deportiva con Capucha (L - Negra)',
-              category: 'Sudaderas',
-              buyPrice: 13.80,
-              sellPrice: 39.99,
-              quantity: 18,
-              minStock: 8,
-              location: 'Estante Colgante C',
-              image: 'https://images.unsplash.com/photo-1556911220-e15b29be8c8f?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'cl-4',
-              code: '2001004',
-              name: 'Chaqueta Cortavientos Impermeable (M - Verde)',
-              category: 'Abrigos',
-              buyPrice: 18.00,
-              sellPrice: 59.99,
-              quantity: 7,
-              minStock: 12,
-              location: 'Sección Invierno Central',
-              image: 'https://images.unsplash.com/photo-1544923246-77307dd654cb?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'cl-5',
-              code: '2001005',
-              name: 'Gorra Deportiva Ajustable (Unise - Negra)',
-              category: 'Accesorios',
-              buyPrice: 2.50,
-              sellPrice: 9.99,
-              quantity: 45,
-              minStock: 10,
-              location: 'Vitrina de Accesorios',
-              image: 'https://images.unsplash.com/photo-1534215754734-18e55d13ce3a?w=150&auto=format&fit=crop&q=60'
-            },
-            {
-              id: 'cl-6',
-              code: '2001006',
-              name: 'Tenis Urbanos Blancos Clásicos (Talla 41)',
-              category: 'Calzado',
-              buyPrice: 22.00,
-              sellPrice: 65.00,
-              quantity: 14,
-              minStock: 5,
-              location: 'Cajas de Calzado Mural',
-              image: 'https://images.unsplash.com/photo-1549298916-b41d501d3772?w=150&auto=format&fit=crop&q=60'
-            }
-          ];
-
-          const CLOTHING_SALES = [
-            {
-              id: 'cl-sale-1',
-              date: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
-              items: [
-                { productId: 'cl-1', name: 'Camiseta Algodón Orgánico Básica (M - Azul)', quantity: 1, sellPrice: 14.99, buyPrice: 4.20 },
-                { productId: 'cl-5', name: 'Gorra Deportiva Ajustable (Unise - Negra)', quantity: 1, sellPrice: 9.99, buyPrice: 2.50 }
-              ],
-              totalAmount: 24.98,
-              responsible: 'Empleado',
-              paymentMethod: 'Tarjeta'
-            },
-            {
-              id: 'cl-sale-2',
-              date: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-              items: [
-                { productId: 'cl-2', name: 'Jeans Denim Slim Fit (Talla 32 - Gris)', quantity: 1, sellPrice: 34.99, buyPrice: 11.50 }
-              ],
-              totalAmount: 34.99,
-              responsible: 'Propietario',
-              paymentMethod: 'Efectivo'
-            }
-          ];
-
-          const CLOTHING_TX = [
-            {
-              id: 'cl-tr-1',
-              productId: 'cl-1',
-              productName: 'Camiseta Algodón Orgánico Básica (M - Azul)',
-              type: 'addition',
-              quantity: 51,
-              reason: 'Ingreso de mercadería de almacén central',
-              date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-              responsible: 'Propietario'
-            },
-            {
-              id: 'cl-tr-2',
-              productId: 'cl-4',
-              productName: 'Chaqueta Cortavientos Impermeable (M - Verde)',
-              type: 'addition',
-              quantity: 7,
-              reason: 'Registro de stock en exhibidores',
-              date: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
-              responsible: 'Propietario'
-            }
-          ];
-
-          localStorage.setItem('venpro_products', JSON.stringify(CLOTHING_SEEDS));
-          localStorage.setItem('venpro_sales', JSON.stringify(CLOTHING_SALES));
-          localStorage.setItem('venpro_transactions', JSON.stringify(CLOTHING_TX));
+        if (!user) {
+          setError('No se pudo crear la cuenta. Verifica tu correo si la confirmación está activa.');
+          return;
         }
 
-        localStorage.setItem('venpro_industry', selectedIndustry || '');
+        const orgData = await createOrganizationWithDatabase({
+          userId: user.id,
+          ownerName: regName,
+          ownerEmail: regEmail,
+          businessName: regBusiness.trim() || getIndustryDefaultStoreName(industry),
+          industry,
+          businessStructure,
+          config: finalConfig,
+        });
 
-        setIsLoading(false);
-        onLoginSuccess();
-      } catch (err) {
-        setIsLoading(false);
-        setError('Error al inicializar la base de datos local del negocio.');
+        onOrganizationBootstrap?.({
+          products: orgData.products,
+          sales: orgData.sales,
+          transactions: orgData.transactions,
+          config: orgData.config,
+          industry: orgData.industry,
+        });
+
+        localStorage.setItem('venpro_invite_code', orgData.inviteCode);
+        await refreshProfile();
+      } else {
+        const seedData = getIndustrySeedData(industry);
+        localStorage.setItem('venpro_business_structure', businessStructure);
+
+        onOrganizationBootstrap?.({
+          products: seedData.products,
+          sales: seedData.sales,
+          transactions: seedData.transactions,
+          config: finalConfig,
+          industry,
+        });
       }
-    }, 1000);
+
+      localStorage.setItem(STORAGE_KEYS.industry, industry);
+      localStorage.setItem(STORAGE_KEYS.ownerProfileName, regName);
+      localStorage.setItem(STORAGE_KEYS.ownerProfileEmail, regEmail);
+      onLoginSuccess({ skipRehydrate: true });
+    } catch (err) {
+      setError(
+        err instanceof AuthError
+          ? err.message
+          : 'Error al inicializar la base de datos del negocio.',
+      );
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleRestauranteSetup = () => {
-    setIsLoading(true);
-    setTimeout(() => {
-      try {
-        const finalConfig = {
-          storeName: 'Restaurante El Gourmet',
-          currencySymbol: '$',
-          address: 'Av. Gourmet #101, Zona Gourmet',
-          phone: '(555) 765-4321',
-          taxRate: 16,
-          ownerAccessPin: configPin || '1234'
-        };
-        localStorage.setItem('venpro_config', JSON.stringify(finalConfig));
-        localStorage.setItem('venpro_business_structure', 'Estacionario');
-        localStorage.setItem('venpro_industry', 'restaurante');
-        
-        const RESTAURANT_GOURMET_SEEDS = [
-          {
-            id: 'rest-gourmet-1',
-            code: '1001001',
-            name: 'Carne de Res',
-            category: 'Carne',
-            buyPrice: 3.50,
-            sellPrice: 8.99,
-            quantity: 2.5,
-            minStock: 15,
-            location: 'Cámara Fría A',
-            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAMCpg5HM-5dVQVev9eTvhD0KTnX9u_v993yhCGjLMdctdcQMocvyHI1POElLDcTD5vmtHSLjjyaRQxk9rGk8z9O4E8kA5xKWA-4hnJJszW_RYrr2dFa0FaMPz_cW8_TbGFzXNq04EeT9BLRzAzRDoqslV9ontQr52rF3-kjYj9yjuQyImHX5qlZWm7AQ9ALfkncb5QYAvKup8VI2FOpAQRFlya0DQLAUpb4MQC0n7EqD4w4FXRGsULEJlcf_yXSuqPzgtvkFDLLEmO'
-          },
-          {
-            id: 'rest-gourmet-2',
-            code: '1001002',
-            name: 'Pan Brioche',
-            category: 'Panadería',
-            buyPrice: 1.20,
-            sellPrice: 3.50,
-            quantity: 15,
-            minStock: 50,
-            location: 'Cocina - Estación de Pan',
-            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCWly33-2gCelcUtumhdP7xDc8w8WV7FqhxREPzP_-t3S5DEbO6VC0W9IStdirgx2xSo7eNyJhNcNGnTZP60Baz2y_beMrH48sHF66xP_zdtnjezp_KZeR6N8xysdFct3YFaqY_GUTnW8ZearjC-1CSRKzzh2NoxKTUzZipkXFoltCFl2v51HDCyKgwAMy1pV8t_Yf2Vyg4d2WWeyf8kebiAaIcpTVuDkoxNFr3TRzEGaIdXcxeLjdhj_B03x-USg8L0DBiRLiSOcsc'
-          },
-          {
-            id: 'rest-gourmet-3',
-            code: '1001003',
-            name: 'Papa Russet',
-            category: 'Vegetales',
-            buyPrice: 0.80,
-            sellPrice: 2.20,
-            quantity: 84,
-            minStock: 20,
-            location: 'Almacén de Verduras',
-            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCUxpBjhyugH1insprfBd0H7FjE0SIpCzGhdQEuoHdR3RhkSCwdr9-2_g6m_hveZKEghUnP4FSE74E5PFxpv6WzXHG_boCYqaaNph0Z0uGx0WYMsoYC-PKxCxsyksYMnLWsOpPIut892JwtCtQ_uUJthZliuGeoqnQNRTVJ313NLfwHKfdmzhvISXT3tZ9fF__ak6xydgnSPM6Cjv10drhksI9DPWP1sQKRsK9kQFXw8jOFkzR5hm_3SrCk1zzfZVj-D0XFzARs9PHs'
-          },
-          {
-            id: 'rest-gourmet-4',
-            code: '1001004',
-            name: 'Hamburguesa Clásica',
-            category: 'Platillos',
-            buyPrice: 4.70,
-            sellPrice: 9.99,
-            quantity: 12,
-            minStock: 30,
-            isComposite: true,
-            location: 'Cocina - Línea caliente',
-            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCmGR9cJjDs6fXtuH8nZy2ecuYC7bfFODJXRQB9VB8ADjGDpIhwajE2QweA_muC6irgYVXQ3UYSaevGrQzAp04OIO88dtFNU13reBKBpyx0ZuJbaIS3O4dEyGq6v1Y7_bxb5n83KWnHRzAhDb93Ln-I2kvppSlkT3WDMQe3wra45_xgNz3OBO42xGjYjmA2PcU-79cR2QwIutUhhMFFEw4eg-RBeuhb8Od9JrEdDctSdsnRmSlBnYLRdigrRPNSnY0raZfzkcYabcix'
-          },
-          {
-            id: 'rest-gourmet-5',
-            code: '1001005',
-            name: 'Tomate Saladet',
-            category: 'Vegetales',
-            buyPrice: 1.10,
-            sellPrice: 2.80,
-            quantity: 8.2,
-            minStock: 5,
-            location: 'Almacén de Verduras',
-            image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC2fxPQYU8hWOOGdBxIDeJL5rlGV-WeNfNz_iIOG6hP7MiyEXqlYm8wnEDJjbbL-Ii6U0OjIpBfgLoi5dUrUGFicOGVwJ3KO0R8eZlyv8lXMLc0nk-q2t9u_Q9ogCL98uTjk7Bm7leo2-1TEHXFaobBWD6tMC33R6pMxvXi3gQTJqv85ql-bBDPnCURS5OPMLfwsUOqnMsEPJL_95hZqFcVuZQpGbUxHbkGdK9fqKbM_rYqsxeVh34A6uXfnkfXiecjXm6m8ulVSWT9'
-          }
-        ];
-
-        const RESTAURANT_GOURMET_SALES = [
-          {
-            id: 'sale-gourmet-1',
-            date: new Date().toISOString(),
-            items: [
-              { productId: 'rest-gourmet-4', name: 'Hamburguesa Clásica', quantity: 1, sellPrice: 12450.00, buyPrice: 4700.00 }
-            ],
-            totalAmount: 12450.00,
-            responsible: 'Propietario',
-            paymentMethod: 'Tarjeta'
-          }
-        ];
-
-        const RESTAURANT_GOURMET_TX = [
-          {
-            id: 'tr-gourmet-1',
-            productId: 'rest-gourmet-1',
-            productName: 'Carne de Res',
-            type: 'addition',
-            quantity: 2.5,
-            reason: 'Inventario inicial de apertura',
-            date: new Date().toISOString(),
-            responsible: 'Propietario'
-          }
-        ];
-
-        localStorage.setItem('venpro_products', JSON.stringify(RESTAURANT_GOURMET_SEEDS));
-        localStorage.setItem('venpro_sales', JSON.stringify(RESTAURANT_GOURMET_SALES));
-        localStorage.setItem('venpro_transactions', JSON.stringify(RESTAURANT_GOURMET_TX));
-        
-        setIsLoading(false);
-        onLoginSuccess();
-      } catch (e) {
-        setIsLoading(false);
-        setError('Error al configurar el restaurante local.');
-      }
-    }, 600);
+  const handleVerificationBack = () => {
+    resetVerificationFlow();
+    setCurrentStep(businessStructure === 'autonomo' ? 2 : 3);
   };
+
+  const renderIdentityVerification = () => (
+    <main className="flex-grow flex flex-col items-center py-12 px-6 md:px-12 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in font-sans">
+      <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#22d3ee]/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
+
+      <div className="w-full max-w-[500px] flex flex-col gap-8 z-10 animate-fade-in">
+        <div className="text-center md:text-left space-y-2">
+          <h1 className="text-3xl md:text-4xl font-extrabold text-[#001b38] font-sans tracking-tight">Verifica tu identidad</h1>
+          <p className="text-sm md:text-base text-[#43474f] leading-relaxed">
+            {verificationSent
+              ? 'Ingresa el código de 6 dígitos que enviamos para proteger tu cuenta.'
+              : 'Elige cómo quieres recibir tu código de seguridad y pulsa Enviar.'}
+          </p>
+          {selectedIndustry && (
+            <p className="text-xs text-[#00687b] font-semibold">
+              {selectedIndustry === 'restaurante' ? 'Restaurante' : 'Tienda de ropa'} ·{' '}
+              {businessStructure === 'autonomo'
+                ? 'Negocio autónomo'
+                : businessStructure === 'mediana'
+                  ? 'Mediana empresa'
+                  : 'Empresa con sucursales'}
+            </p>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div
+            className={`relative flex flex-col p-4 bg-white border rounded-xl cursor-pointer hover:border-[#00687b] transition-all group active:scale-95 duration-150 ${
+              authMethod === 'sms' ? 'border-2 border-[#00B8D9] bg-[#e0e8ff]/40 ring-2 ring-[#00B8D9]/20' : 'border-gray-200'
+            }`}
+            onClick={() => handleAuthMethodChange('sms')}
+          >
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-[#00687b] group-hover:text-[#001636] flex items-center justify-center">
+                <MessageSquare size={20} />
+              </span>
+              <span className="font-bold text-[#001b38] text-sm">SMS a mi celular</span>
+            </div>
+            <p className="text-[11px] text-[#43474f]">{maskPhone(regPhoneNumber)}</p>
+            <div className={`absolute top-4 right-4 h-4 w-4 rounded-full border border-gray-300 flex items-center justify-center transition-colors ${
+              authMethod === 'sms' ? 'bg-[#00B8D9] border-[#00B8D9]' : ''
+            }`}>
+              {authMethod === 'sms' && <div className="h-1.5 w-1.5 bg-white rounded-full"></div>}
+            </div>
+          </div>
+
+          <div
+            className={`relative flex flex-col p-4 bg-white border rounded-xl cursor-pointer hover:border-[#00687b] transition-all group active:scale-95 duration-150 ${
+              authMethod === 'email' ? 'border-2 border-[#00B8D9] bg-[#e0e8ff]/40 ring-2 ring-[#00B8D9]/20' : 'border-gray-200'
+            }`}
+            onClick={() => handleAuthMethodChange('email')}
+          >
+            <div className="flex items-center gap-3 mb-2">
+              <span className="text-[#00687b] group-hover:text-[#001636] flex items-center justify-center">
+                <Mail size={20} />
+              </span>
+              <span className="font-bold text-[#001b38] text-sm">Código por correo</span>
+            </div>
+            <p className="text-[11px] text-[#43474f]">{maskEmail(regEmail)}</p>
+            <div className={`absolute top-4 right-4 h-4 w-4 rounded-full border border-gray-300 flex items-center justify-center transition-colors ${
+              authMethod === 'email' ? 'bg-[#00B8D9] border-[#00B8D9]' : ''
+            }`}>
+              {authMethod === 'email' && <div className="h-1.5 w-1.5 bg-white rounded-full"></div>}
+            </div>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={handleSendVerificationCode}
+          disabled={isSendingCode}
+          className="w-full bg-[#001636] hover:bg-[#002a5c] disabled:opacity-60 disabled:cursor-not-allowed text-white py-3.5 rounded-lg font-bold text-sm shadow-md active:scale-95 transition-all duration-150 flex justify-center items-center gap-2 font-sans"
+        >
+          {isSendingCode ? (
+            <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+          ) : (
+            <>
+              {authMethod === 'email' ? <Mail size={18} /> : <Smartphone size={18} />}
+              <span>{verificationSent ? 'Reenviar código' : 'Enviar código'}</span>
+            </>
+          )}
+        </button>
+
+        {verificationMessage && (
+          <div className="flex items-start gap-2 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-sm">
+            <CheckCircle2 size={18} className="shrink-0 mt-0.5" />
+            <span>{verificationMessage}</span>
+          </div>
+        )}
+
+        {demoVerificationCode && (
+          <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
+            <Info size={18} className="shrink-0 mt-0.5" />
+            <span>
+              Sin proveedor de envío configurado. Usa este código de prueba:{' '}
+              <strong className="font-mono tracking-widest">{demoVerificationCode}</strong>
+            </span>
+          </div>
+        )}
+
+        {verificationError && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-red-700 text-sm text-center">
+            {verificationError}
+          </div>
+        )}
+
+        <div className={`bg-white border border-gray-200 rounded-xl p-8 flex flex-col items-center gap-6 shadow-sm transition-opacity ${
+          verificationSent ? 'opacity-100' : 'opacity-60 pointer-events-none'
+        }`}>
+          <span className="text-xs font-bold text-[#43474f] uppercase tracking-widest text-center">Ingresa el código</span>
+          <div className="flex gap-2 md:gap-4 justify-center" id="otp-container">
+            {otp.map((digit, idx) => (
+              <input
+                key={idx}
+                ref={el => { otpRefs.current[idx] = el; }}
+                value={digit}
+                onChange={(e) => handleOtpChange(e.target.value, idx)}
+                onKeyDown={(e) => handleOtpKeyDown(e, idx)}
+                disabled={!verificationSent || isVerifyingCode}
+                className="w-11 h-14 md:w-16 md:h-20 text-center text-3xl font-bold border border-gray-200 rounded-lg bg-slate-50 focus:outline-none focus:border-[#00B8D9] focus:ring-2 focus:ring-[#00B8D9]/20 transition-all text-[#001636] disabled:opacity-50"
+                maxLength={1}
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+              />
+            ))}
+          </div>
+          <button
+            type="button"
+            onClick={handleSendVerificationCode}
+            disabled={!verificationSent || isSendingCode}
+            className="text-sm text-[#00687b] hover:underline cursor-pointer transition-all font-semibold font-sans disabled:opacity-50 disabled:cursor-not-allowed disabled:no-underline"
+          >
+            ¿No recibiste el código? Reenviar
+          </button>
+        </div>
+
+        <div className="space-y-3">
+          <button
+            type="button"
+            onClick={handleVerifyAndFinish}
+            disabled={!verificationSent || isVerifyingCode}
+            className="w-full bg-[#00B8D9] hover:bg-[#009fb8] disabled:opacity-60 disabled:cursor-not-allowed text-white py-4 rounded-lg font-bold text-lg shadow-lg active:scale-95 transition-all duration-150 uppercase tracking-wide cursor-pointer flex justify-center items-center gap-2 font-sans"
+          >
+            {isVerifyingCode ? (
+              <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            ) : (
+              'Verificar y finalizar'
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={handleVerificationBack}
+            className="w-full py-4 border-2 border-[#22d3ee]/45 text-[#43474f] hover:bg-slate-50 rounded-xl font-bold text-sm font-sans transition-all active:scale-95 flex items-center justify-center gap-2"
+          >
+            Atrás
+          </button>
+        </div>
+
+        <p className="text-center text-[11px] text-[#43474f] px-8 leading-relaxed font-sans">
+          Al hacer clic en verificar, confirmas que eres el titular de la cuenta Venpro y aceptas nuestros{' '}
+          <a className="text-[#00687b] underline hover:text-[#001636]" href="#">Términos de Seguridad</a>.
+        </p>
+      </div>
+    </main>
+  );
 
   const handleGoogleLogin = () => {
     setIsLoading(true);
@@ -795,15 +942,21 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
         `}} />
         
         {/* Top Bar: Navy blue background with the Venpro logo centered */}
-        <header className="bg-[#002A5C] h-16 flex items-center justify-center w-full z-50 shadow-md relative">
+        <header className="bg-[#002A5C] h-16 flex items-center w-full z-50 shadow-md px-4 md:px-6 gap-4">
           <button 
             type="button"
-            onClick={() => setShowEmployeeQRScanner(false)}
-            className="absolute left-4 text-white hover:text-[#50dcff] flex items-center gap-1.5 text-xs font-bold font-sans transition-all animate-pulse"
+            onClick={() => {
+              setShowEmployeeQRScanner(false);
+              setPendingEmployeeRegistration(null);
+              setIsScanned(false);
+              employeeScannedRef.current = false;
+              setEmployeeScannerError(null);
+            }}
+            className="text-white hover:text-[#50dcff] flex items-center gap-1.5 text-xs font-bold font-sans transition-all shrink-0"
           >
             <ArrowLeft size={16} /> Corregir datos
           </button>
-          <h1 className="text-white text-xl font-bold tracking-tight">Venpro</h1>
+          <VenproWordmark className="text-xl" />
         </header>
 
         {/* Main Content Canvas */}
@@ -855,37 +1008,26 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
               {isScanned && (
                 <div className="absolute inset-0 bg-[#00a86a] flex flex-col items-center justify-center text-white z-20 p-4">
                   <span className="text-5xl animate-bounce">✓</span>
-                  <p className="font-bold text-sm tracking-wide mt-2">¡Socio/Empleado Detectado!</p>
-                  <p className="text-xs text-gray-100 opacity-90">Abriendo panel de control...</p>
+                  <p className="font-bold text-sm tracking-wide mt-2">¡Negocio vinculado!</p>
+                  <p className="text-xs text-gray-100 opacity-90">Creando tu acceso de empleado...</p>
                 </div>
               )}
             </div>
           </div>
 
           {/* Instructions Text */}
-          <div className="text-center space-y-2 max-w-xs animate-pulse font-sans">
+          <div className="text-center space-y-2 max-w-sm font-sans">
             <p className="text-[#081b38] font-bold text-xl px-4">
-              Si eres empleado escanea el código QR
+              Escanea el QR de tu propietario
             </p>
-            <p className="text-sm text-gray-400 italic font-sans leading-relaxed">
-              La cámara está activa. Alinea el código dentro del recuadro
+            <p className="text-sm text-gray-500 leading-relaxed px-2">
+              Pide al propietario que abra <strong>Enlace QR</strong> en su panel y muestra ese código a la cámara.
             </p>
-          </div>
-
-          {/* Simulate Action Controls */}
-          <div className="mt-8 flex flex-col items-center gap-2">
-            <button 
-              type="button"
-              onClick={() => {
-                setIsScanned(true);
-                setTimeout(() => {
-                  onLoginSuccess();
-                }, 1500);
-              }}
-              className="bg-[#50dcff] hover:bg-[#00687b] hover:text-white text-[#001f27] text-xs font-bold py-2.5 px-6 rounded-lg shadow-sm transition-all duration-200 uppercase tracking-widest scale-100 hover:scale-105"
-            >
-              Simular escaneo de QR
-            </button>
+            {employeeScannerError && (
+              <p className="text-sm text-red-600 font-semibold bg-red-50 border border-red-100 rounded-lg px-4 py-2 mt-2">
+                {employeeScannerError}
+              </p>
+            )}
           </div>
 
           {/* Success Message toast */}
@@ -910,22 +1052,30 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
             >
               <ArrowLeft size={20} />
             </button>
-            <h1 className="text-white text-2xl font-bold tracking-wide">Venpro</h1>
+            <VenproWordmark className="text-2xl" />
           </div>
         </header>
       ) : (
         <header className="w-full h-16 bg-[#002a5c] flex justify-between items-center px-6 md:px-12 shadow-md z-50 animate-fade-in sticky top-0">
-          <div className="text-2xl font-bold font-sans text-white">Venpro</div>
+          <VenproWordmark className="text-2xl" />
           <div className="flex items-center gap-4">
             <span className="text-[11px] font-bold text-white tracking-tight uppercase font-sans">
-              {currentStep === 1 ? 'PASO 1 DE 3' : currentStep === 2 ? 'PASO 2 DE 3' : currentStep === 3 ? 'PASO 3 DE 3' : 'SEGURIDAD'}
+              {currentStep === 1
+                ? 'PASO 1 DE 4'
+                : currentStep === 2
+                  ? 'PASO 2 DE 4'
+                  : currentStep === 3
+                    ? 'PASO 3 DE 4'
+                    : currentStep === 4
+                      ? 'VERIFICACIÓN'
+                      : 'SEGURIDAD'}
             </span>
             <div className="w-24 h-1.5 bg-white/20 rounded-full overflow-hidden">
               <div 
                 className="h-full bg-[#22d3ee] transition-all duration-300" 
                 style={{ 
                   width: `${
-                    currentStep === 1 ? '33%' : currentStep === 2 ? '66%' : '100%'
+                    currentStep === 1 ? '25%' : currentStep === 2 ? '50%' : currentStep === 3 ? '75%' : '100%'
                   }` 
                 }}
               />
@@ -1011,6 +1161,12 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
                           <ChevronDown size={18} />
                         </span>
                       </div>
+                    </div>
+
+                    <div className="rounded-lg bg-[#e0e8ff]/40 border border-[#50dcff]/30 px-4 py-3 text-left">
+                      <p className="text-xs text-[#00687b] font-semibold leading-relaxed">
+                        Tras registrarte, deberás escanear el código QR que muestra tu propietario en la pestaña <strong>Enlace QR</strong> para vincular tu cuenta al negocio.
+                      </p>
                     </div>
 
                     {/* Email */}
@@ -1248,6 +1404,84 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
                       </button>
                     </div>
                     <p className="text-[11px] text-gray-400 font-medium font-sans">Mínimo 8 caracteres, incluye un número.</p>
+                  </div>
+
+                  {/* Confirmar contraseña */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-[#081b38] block" htmlFor="reg_password_confirm">
+                      Confirmar Contraseña
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-gray-400">
+                        <Lock size={18} />
+                      </span>
+                      <input
+                        className={`w-full pl-10 pr-12 py-2.5 bg-white border rounded-lg text-sm text-[#081b38] placeholder-gray-400 focus:outline-none focus:ring-2 transition-all font-sans ${
+                          regPasswordConfirm && regPassword !== regPasswordConfirm
+                            ? 'border-red-300 focus:border-red-400 focus:ring-red-200'
+                            : 'border-gray-300 focus:border-[#00B8D9] focus:ring-[#00B8D9]/20'
+                        }`}
+                        id="reg_password_confirm"
+                        type={showPasswordConfirm ? 'text' : 'password'}
+                        required
+                        value={regPasswordConfirm}
+                        onChange={(e) => setRegPasswordConfirm(e.target.value)}
+                        placeholder="Repite tu contraseña"
+                        disabled={isLoading}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowPasswordConfirm(!showPasswordConfirm)}
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-[#081b38] p-1 transition-colors"
+                      >
+                        {showPasswordConfirm ? <EyeOff size={18} /> : <Eye size={18} />}
+                      </button>
+                    </div>
+                    {regPasswordConfirm && regPassword !== regPasswordConfirm && (
+                      <p className="text-[11px] text-red-500 font-medium font-sans">Las contraseñas no coinciden.</p>
+                    )}
+                  </div>
+
+                  {/* Teléfono */}
+                  <div className="space-y-1">
+                    <label className="text-xs font-bold text-[#081b38] block" htmlFor="reg_phone">
+                      Teléfono de contacto
+                    </label>
+                    <div className="flex gap-2">
+                      <select
+                        id="reg_phone_country"
+                        value={regPhoneCountryCode}
+                        onChange={(e) => setRegPhoneCountryCode(e.target.value)}
+                        disabled={isLoading}
+                        className="w-[42%] min-w-[8.5rem] px-2 py-2.5 bg-white border border-gray-300 rounded-lg text-xs text-[#081b38] focus:outline-none focus:border-[#00B8D9] focus:ring-2 focus:ring-[#00B8D9]/20 transition-all font-sans"
+                        aria-label="Código de país"
+                      >
+                        {COUNTRY_PHONE_CODES.map(({ code, label }) => (
+                          <option key={code} value={code}>
+                            {label}
+                          </option>
+                        ))}
+                      </select>
+                      <div className="relative flex-1">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400">
+                          <Phone size={16} />
+                        </span>
+                        <input
+                          className="w-full pl-9 pr-4 py-2.5 bg-white border border-gray-300 rounded-lg text-sm text-[#081b38] placeholder-gray-400 focus:outline-none focus:border-[#00B8D9] focus:ring-2 focus:ring-[#00B8D9]/20 transition-all font-sans"
+                          id="reg_phone"
+                          type="tel"
+                          inputMode="numeric"
+                          required
+                          value={regPhoneNumber}
+                          onChange={(e) => setRegPhoneNumber(e.target.value.replace(/[^\d\s-]/g, ''))}
+                          placeholder="555 123 4567"
+                          disabled={isLoading}
+                        />
+                      </div>
+                    </div>
+                    <p className="text-[11px] text-gray-400 font-medium font-sans">
+                      Selecciona tu país e ingresa tu número sin el código internacional.
+                    </p>
                   </div>
 
                   {/* Terms and Conditions */}
@@ -1687,7 +1921,12 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
                 type="button"
                 id="btn-structure-next"
                 onClick={() => {
-                  setCurrentStep(3);
+                  if (businessStructure === 'autonomo') {
+                    resetVerificationFlow();
+                    setCurrentStep(4);
+                  } else {
+                    setCurrentStep(3);
+                  }
                 }}
                 className="w-full md:w-64 py-4 px-8 bg-[#22d3ee] text-white rounded-lg font-bold text-sm transition-all duration-300 active:scale-95 shadow-lg shadow-[#22d3ee]/20 hover:brightness-110"
               >
@@ -1706,131 +1945,9 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
         </main>
       )}
 
-      {/* Step 3: Gestiona tu Equipo / Añadir Empleado */}
-      {currentStep === 3 && (
-        businessStructure === 'autonomo' ? (
-          <main className="flex-grow flex flex-col items-center py-12 px-6 md:px-12 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in font-sans">
-            {/* Background decorative elements */}
-            <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#22d3ee]/5 rounded-full blur-3xl pointer-events-none" />
-            <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
-            
-            <div className="w-full max-w-[500px] flex flex-col gap-8 z-10 animate-fade-in">
-              {/* Header Text */}
-              <div className="text-center md:text-left space-y-2">
-                <h1 className="text-3xl md:text-4xl font-extrabold text-[#001b38] font-sans tracking-tight">Verifica tu identidad</h1>
-                <p className="text-sm md:text-base text-[#43474f] leading-relaxed">
-                  Hemos enviado un código de seguridad para proteger tu cuenta.
-                </p>
-              </div>
-
-              {/* Selection Options */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div 
-                  className={`relative flex flex-col p-4 bg-white border rounded-xl cursor-pointer hover:border-[#00687b] transition-all group active:scale-95 duration-150 ${
-                    authMethod === 'sms' ? 'border-2 border-[#00B8D9] bg-[#e0e8ff]/40 ring-2 ring-[#00B8D9]/20' : 'border-gray-200'
-                  }`}
-                  onClick={() => setAuthMethod('sms')}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-[#00687b] group-hover:text-[#001636] flex items-center justify-center">
-                      <MessageSquare size={20} />
-                    </span>
-                    <span className="font-bold text-[#001b38] text-sm">SMS a mi celular</span>
-                  </div>
-                  <p className="text-[11px] text-[#43474f]">Terminado en •••• 4567</p>
-                  <div className={`absolute top-4 right-4 h-4 w-4 rounded-full border border-gray-300 flex items-center justify-center transition-colors ${
-                    authMethod === 'sms' ? 'bg-[#00B8D9] border-[#00B8D9]' : ''
-                  }`}>
-                    {authMethod === 'sms' && <div className="h-1.5 w-1.5 bg-white rounded-full"></div>}
-                  </div>
-                </div>
-
-                <div 
-                  className={`relative flex flex-col p-4 bg-white border rounded-xl cursor-pointer hover:border-[#00687b] transition-all group active:scale-95 duration-150 ${
-                    authMethod === 'email' ? 'border-2 border-[#00B8D9] bg-[#e0e8ff]/40 ring-2 ring-[#00B8D9]/20' : 'border-gray-200'
-                  }`}
-                  onClick={() => setAuthMethod('email')}
-                >
-                  <div className="flex items-center gap-3 mb-2">
-                    <span className="text-[#00687b] group-hover:text-[#001636] flex items-center justify-center">
-                      <Mail size={20} />
-                    </span>
-                    <span className="font-bold text-[#001b38] text-sm">Código por correo</span>
-                  </div>
-                  <p className="text-[11px] text-[#43474f]">a••••@gmail.com</p>
-                  <div className={`absolute top-4 right-4 h-4 w-4 rounded-full border border-gray-300 flex items-center justify-center transition-colors ${
-                    authMethod === 'email' ? 'bg-[#00B8D9] border-[#00B8D9]' : ''
-                  }`}>
-                    {authMethod === 'email' && <div className="h-1.5 w-1.5 bg-white rounded-full"></div>}
-                  </div>
-                </div>
-              </div>
-
-              {/* Verification Code Input */}
-              <div className="bg-white border border-gray-200 rounded-xl p-8 flex flex-col items-center gap-6 shadow-sm">
-                <span className="text-xs font-bold text-[#43474f] uppercase tracking-widest text-center">Ingresa el código</span>
-                <div className="flex gap-2 md:gap-4 justify-center" id="otp-container">
-                  {otp.map((digit, idx) => (
-                    <input
-                      key={idx}
-                      ref={el => { otpRefs.current[idx] = el; }}
-                      value={digit}
-                      onChange={(e) => handleOtpChange(e.target.value, idx)}
-                      onKeyDown={(e) => handleOtpKeyDown(e, idx)}
-                      className="w-11 h-14 md:w-16 md:h-20 text-center text-3xl font-bold border border-gray-200 rounded-lg bg-slate-50 focus:outline-none focus:border-[#00B8D9] focus:ring-2 focus:ring-[#00B8D9]/20 transition-all text-[#001636]"
-                      maxLength={1}
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                    />
-                  ))}
-                </div>
-                <button 
-                  type="button"
-                  onClick={() => {
-                    alert('Se ha reenviado un nuevo código de seguridad a tu método seleccionado.');
-                  }}
-                  className="text-sm text-[#00687b] hover:underline cursor-pointer transition-all font-semibold font-sans"
-                >
-                  ¿No recibiste el código? Reenviar
-                </button>
-              </div>
-
-              {/* Action Buttons */}
-              <div className="space-y-3">
-                <button 
-                  type="button"
-                  onClick={() => {
-                    const filledCode = otp.join('');
-                    if (filledCode.length < 6) {
-                      alert('Por favor ingresa el código de 6 dígitos que has recibido.');
-                      return;
-                    }
-                    handleRestauranteSetup();
-                  }}
-                  className="w-full bg-[#00B8D9] hover:bg-[#009fb8] text-white py-4 rounded-lg font-bold text-lg shadow-lg active:scale-95 transition-all duration-150 uppercase tracking-wide cursor-pointer flex justify-center items-center gap-2 font-sans"
-                >
-                  Verificar y finalizar
-                </button>
-                
-                <button 
-                  type="button"
-                  onClick={() => {
-                    setCurrentStep(2);
-                  }}
-                  className="w-full py-4 border-2 border-[#22d3ee]/45 text-[#43474f] hover:bg-slate-50 rounded-xl font-bold text-sm font-sans transition-all active:scale-95 flex items-center justify-center gap-2"
-                >
-                  Atrás
-                </button>
-              </div>
-
-              {/* Legal Info */}
-              <p className="text-center text-[11px] text-[#43474f] px-8 leading-relaxed font-sans">
-                Al hacer clic en verificar, confirmas que eres el titular de la cuenta Venpro y aceptas nuestros <a className="text-[#00687b] underline hover:text-[#001636]" href="#">Términos de Seguridad</a>.
-              </p>
-            </div>
-          </main>
-        ) : businessStructure === 'sucursales' ? (
+      {/* Step 3: Gestiona tu Equipo / Sucursales (mediana y sucursales) */}
+      {currentStep === 3 && businessStructure !== 'autonomo' && (
+        businessStructure === 'sucursales' ? (
           <div className="flex-grow flex min-h-[calc(100vh-4rem)] text-[#081b38] bg-[#f9f9ff] font-sans relative">
             {/* Sidebar Left */}
             <aside className="hidden md:flex flex-col w-64 bg-[#001636]/90 border-r border-white/5 h-[calc(100vh-4rem)] sticky top-16 shrink-0 text-white z-20">
@@ -1948,10 +2065,13 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
               </button>
               <button 
                 type="button"
-                onClick={handleRestauranteSetup}
+                onClick={() => {
+                  resetVerificationFlow();
+                  setCurrentStep(4);
+                }}
                 className="w-full max-w-sm bg-[#00B8D9] hover:bg-[#009fb8] text-white py-4 rounded-xl font-bold shadow-lg hover:shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2"
               >
-                <span>Finalizar</span>
+                <span>Continuar</span>
               </button>
             </div>
 
@@ -2217,18 +2337,25 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
               </button>
               <button 
                 type="button"
-                onClick={handleRestauranteSetup}
+                onClick={() => {
+                  resetVerificationFlow();
+                  setShowInvitarQR(false);
+                  setCurrentStep(4);
+                }}
                 className="w-full max-w-sm bg-[#00B8D9] hover:bg-[#009fb8] text-white py-4 rounded-xl font-bold shadow-lg hover:shadow-xl transition-all active:scale-[0.98] flex items-center justify-center gap-2"
               >
-                <span>Finalizar</span>
+                <span>Continuar</span>
               </button>
             </div>
           </div>
         )
       )}
 
-      {/* Step 4: Detalles de Facturación & Propiedades */}
-      {currentStep === 4 && (
+      {/* Step 4: Verificación de identidad (todas las estructuras) */}
+      {currentStep === 4 && renderIdentityVerification()}
+
+      {/* Step 5: Detalles de Facturación & Propiedades */}
+      {currentStep === 5 && (
         <main className="flex-grow flex items-center justify-center px-4 py-8 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#64FFB1]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
@@ -2286,13 +2413,13 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
 
             <div className="mt-8 flex items-center gap-3">
               <button 
-                onClick={() => setCurrentStep(3)}
+                onClick={() => setCurrentStep(4)}
                 className="w-1/3 py-2.5 border border-gray-200 text-[#43474f] font-bold rounded-xl text-center hover:bg-slate-50 transition-colors text-xs font-sans"
               >
                 Atrás
               </button>
               <button 
-                onClick={() => setCurrentStep(5)}
+                onClick={() => setCurrentStep(6)}
                 className="w-2/3 bg-[#00B8D9] hover:bg-[#009cb9] text-white font-bold py-2.5 rounded-xl text-center shadow-lg shadow-[#00B8D9]/20 active:scale-[0.98] transition-all text-xs font-sans"
               >
                 Siguiente
@@ -2302,8 +2429,8 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
         </main>
       )}
 
-      {/* Step 5: PIN / Seguridad */}
-      {currentStep === 5 && (
+      {/* Step 6: PIN / Seguridad */}
+      {currentStep === 6 && (
         <main className="flex-grow flex items-center justify-center px-4 py-8 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#64FFB1]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
@@ -2375,7 +2502,7 @@ export default function LoginScreen({ role = 'owner', onBack, onLoginSuccess }: 
             <div className="flex items-center gap-3">
               <button 
                 type="button"
-                onClick={() => setCurrentStep(4)}
+                onClick={() => setCurrentStep(5)}
                 className="w-1/3 py-2.5 border border-gray-200 text-[#43474f] font-bold rounded-xl text-center hover:bg-slate-50 transition-colors text-xs font-sans"
               >
                 Atrás

@@ -2,6 +2,19 @@
  * Types definition for Venpro Inventory System
  */
 
+export type IndustryType = 'restaurante' | 'tienda';
+
+export type ClothingAudience = 'Clásicas' | 'Niños' | 'Bebés';
+
+export interface RecipeComponent {
+  productId: string;
+  name: string;
+  quantity: number;
+  unit?: string;
+  buyPrice: number;
+  order?: number;
+}
+
 export interface Product {
   id: string;
   code: string;
@@ -14,6 +27,11 @@ export interface Product {
   location: string; // Storage section (e.g. Pasillo A, Estante 4)
   image?: string; // Optional product image URL
   isCompound?: boolean; // True if it is a compound product
+  unit?: string; // Unidad de medida (restaurante)
+  recipe?: RecipeComponent[]; // Ingredientes de producto compuesto
+  audience?: ClothingAudience; // Línea de ropa (tienda)
+  sizes?: string[]; // Tallas disponibles (tienda)
+  colors?: string[]; // Colores disponibles (tienda)
 }
 
 export interface SaleItem {
@@ -51,4 +69,13 @@ export interface StoreConfig {
   phone: string;
   taxRate: number; // as percentage, e.g. 19
   ownerAccessPin: string; // Secret lock passcode
+}
+
+export interface UserProfile {
+  id: string;
+  fullName: string;
+  email: string;
+  role: 'owner' | 'employee';
+  organizationId: string | null;
+  cargo?: string;
 }

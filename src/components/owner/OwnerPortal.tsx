@@ -1,14 +1,32 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
   TrendingUp, AlertTriangle, DollarSign, Boxes, FileText, Settings, LogOut,
   PlusCircle, Edit2, Trash2, Search, SlidersHorizontal, RotateCcw, Save, Check,
   ChevronRight, ArrowUpRight, BarChart3, ShoppingBag, Coins, Layers, MapPin, Phone,
   ArrowLeft, LayoutDashboard, History, Users, QrCode, Package, HelpCircle,
-  User, Lock, Camera, X, GripVertical, Leaf, Egg, Droplet, Flame, Utensils, Menu,
+  User, Lock, Camera, X, GripVertical, Leaf, Egg, Droplet, Flame, Utensils, Menu, Building2,
   Calendar, Bell
 } from 'lucide-react';
-import { Product, Sale, StockTransaction, StoreConfig } from '@/types';
+import { Product, Sale, StockTransaction, StoreConfig, IndustryType, RecipeComponent } from '@/types';
+import {
+  type CompositionIngredient,
+  formatStockDisplay,
+  getIngredientIconName,
+  productToCompositionIngredient,
+  recipeToCompositionIngredients,
+} from '@/lib/restaurantProduct';
+import ClothingStoreDashboard from '@/components/dashboards/ClothingStoreDashboard';
+import DailySalesPanel, { type DailySalesPanelHandle } from '@/components/dashboards/DailySalesPanel';
+import { getMaxCompoundSaleQuantity, isProductAvailableForSale } from '@/lib/compoundProduct';
+import ClothingProductFields from '@/components/products/ClothingProductFields';
+import { CLOTHING_CATEGORIES } from '@/data/clothingCatalog';
+import OwnerInviteQrCode from '@/components/owner/OwnerInviteQrCode';
+import VenproWordmark, { VENPRO_LOGO_SRC } from '@/components/brand/VenproWordmark';
+import { getIndustryWelcomeSubtitle } from '@/lib/industry';
+import { useVenproAuth } from '@/contexts/VenproAuthContext';
+import { COUNTRY_PHONE_CODES, formatRegistrationPhone, parseStoredPhone } from '@/lib/phone';
+import { STORAGE_KEYS } from '@/constants/storage';
 import { 
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, 
   Legend, BarChart, Bar, Cell 
@@ -19,11 +37,13 @@ interface OwnerPortalProps {
   sales: Sale[];
   transactions: StockTransaction[];
   config: StoreConfig;
+  industry: IndustryType;
   onUpdateProducts: (newProducts: Product[]) => void;
   onUpdateSales: (newSales: Sale[]) => void;
   onUpdateTransactions: (newTransactions: StockTransaction[]) => void;
   onUpdateConfig: (newConfig: StoreConfig) => void;
   onBack: () => void;
+  onLogout: () => void;
 }
 
 type TabType = 'dashboard' | 'inventario' | 'finanzas' | 'config' | 'historial' | 'personal' | 'qr' | 'ayuda';
@@ -33,14 +53,23 @@ export default function OwnerPortal({
   sales,
   transactions,
   config,
+  industry,
   onUpdateProducts,
   onUpdateSales,
   onUpdateTransactions,
   onUpdateConfig,
-  onBack
+  onBack,
+  onLogout,
 }: OwnerPortalProps) {
+  const { profile } = useVenproAuth();
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  const handleTabChange = (tab: TabType) => {
+    setActiveTab(tab);
+    setSidebarOpen(false);
+  };
   const [categoryFilter, setCategoryFilter] = useState('Todas');
   const [stockLevelFilter, setStockLevelFilter] = useState<'todos' | 'bajo' | 'suficiente'>('todos');
   const [showRecipeModal, setShowRecipeModal] = useState(false);
@@ -48,26 +77,17 @@ export default function OwnerPortal({
   // States for interactive custom recipe composition/editor matching attached HTML structure
   const [showRecipeForm, setShowRecipeForm] = useState(false);
   const [recipeSearchQuery, setRecipeSearchQuery] = useState('');
-  const [compositionIngredients, setCompositionIngredients] = useState([
-    { id: '4592', name: 'Pan Brioche Artesanal', stock: '150 u', quantity: 1, unit: 'u', estimatedCost: 1.250 },
-    { id: '8821', name: 'Carne de Res Premium (180g)', stock: '45 kg', quantity: 1, unit: 'u', estimatedCost: 2.200 },
-    { id: '2104', name: 'Queso Cheddar Madurado', stock: '12 kg', quantity: 2, unit: 'slc', estimatedCost: 0.400 },
-  ]);
-
-  const [addableRecipeComponents, setAddableRecipeComponents] = useState([
-    { name: 'Lechuga Hidropónica', stock: '50 cabezas', iconName: 'eco', estimatedCost: 0.150, unit: 'u' },
-    { name: 'Huevo de Campo', stock: '240 u', iconName: 'egg', estimatedCost: 0.300, unit: 'u' },
-    { name: 'Salsa Especial Venpro', stock: '15 L', iconName: 'kitchen', estimatedCost: 0.250, unit: 'ml' },
-    { name: 'Tocino Ahumado', stock: '8 kg', iconName: 'restaurant', estimatedCost: 0.600, unit: 'slc' },
-    { name: 'Cebolla Caramelizada', stock: '3 kg', iconName: 'lunch_dining', estimatedCost: 0.200, unit: 'g' },
-  ]);
+  const [compositionIngredients, setCompositionIngredients] = useState<CompositionIngredient[]>([]);
+  const [editingCompoundProduct, setEditingCompoundProduct] = useState<Product | null>(null);
 
   const [showSuccessToast, setShowSuccessToast] = useState(false);
   const [justAddedNames, setJustAddedNames] = useState<string[]>([]);
   const [showProductTypeSelectionModal, setShowProductTypeSelectionModal] = useState(false);
 
-  const [recipeName, setRecipeName] = useState('Hamburguesa Especial');
-  const [recipeImage, setRecipeImage] = useState('https://lh3.googleusercontent.com/aida-public/AB6AXuDGg6JATLsPqx35mIG76Wg8oAuyUAkfBeF5t88H9AMrYliQh_nLkBy-llUHoRM2KMUvKtg7U2I471AXVG7aEtw7L0XgCurpR0E4ye6NZdo_4J4EkqEfAU3-JVmBwJx8Et-uqdSmiZO4E17QeOICQpT9ngXvvMfHAKJbdDxcnrTcV7cErjubEMawUkg65u16WzpB9s54-1pA56xkkCI-h0YYB-XW37OgXUMEQvm3B9pZepGi0W2iX7NXCLPxyJokjCNM36Ddreqy4V9C');
+  const [recipeName, setRecipeName] = useState('');
+  const [recipeImage, setRecipeImage] = useState('');
+  const [recipeCategory, setRecipeCategory] = useState('Alimentos');
+  const [recipeSellPrice, setRecipeSellPrice] = useState(0);
   const recipeImageInputRef = useRef<HTMLInputElement>(null);
 
   const handleRecipeImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -89,8 +109,10 @@ export default function OwnerPortal({
 
   // Profile Settings state
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const defaultProfileImage = 'https://lh3.googleusercontent.com/aida-public/AB6AXuBRUlu9gU9sqqe_bKfQlxLoiEN50vaaaQC7IyzhXxS9CYUwaR0rKOWf0Ro7vZquaNoKfhHpvlBA64hvz0m-3opxgYzNutfLx0rRQ73SWqsKCF74KDaAoMyc-KCu7OZGc1qLo4E0_1UAflpQk_kzRcmChiRfspVy1nuov3cPzt9H6Lr9uMF7VwheM0yPazFxRcrKShKs7ka0aRhwwBUa4xVNtghvfRpFuoTuVVe6eDog3WHhwQ7A-C_aGPVuYgwZCJSDgu9PjN-qJCKY';
+
   const [profileImage, setProfileImage] = useState<string>(() => {
-    return localStorage.getItem('ownerProfileImage') || 'https://lh3.googleusercontent.com/aida-public/AB6AXuBRUlu9gU9sqqe_bKfQlxLoiEN50vaaaQC7IyzhXxS9CYUwaR0rKOWf0Ro7vZquaNoKfhHpvlBA64hvz0m-3opxgYzNutfLx0rRQ73SWqsKCF74KDaAoMyc-KCu7OZGc1qLo4E0_1UAflpQk_kzRcmChiRfspVy1nuov3cPzt9H6Lr9uMF7VwheM0yPazFxRcrKShKs7ka0aRhwwBUa4xVNtghvfRpFuoTuVVe6eDog3WHhwQ7A-C_aGPVuYgwZCJSDgu9PjN-qJCKY';
+    return localStorage.getItem(STORAGE_KEYS.ownerProfileImage) || defaultProfileImage;
   });
 
   const handleImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -104,41 +126,145 @@ export default function OwnerPortal({
       reader.onloadend = () => {
         if (typeof reader.result === 'string') {
           setProfileImage(reader.result);
-          localStorage.setItem('ownerProfileImage', reader.result);
+          localStorage.setItem(STORAGE_KEYS.ownerProfileImage, reader.result);
         }
       };
       reader.readAsDataURL(file);
     }
   };
 
-  const [profileName, setProfileName] = useState('Alejandro Ramírez');
-  const [profilePhone, setProfilePhone] = useState('55 1234 5678');
-  const [profileCountryCode, setProfileCountryCode] = useState('MX');
+  const [profileName, setProfileName] = useState('');
+  const [profileEmail, setProfileEmail] = useState('');
+  const [profilePhone, setProfilePhone] = useState('');
+  const [profileCountryCode, setProfileCountryCode] = useState('+52');
+  const [companyName, setCompanyName] = useState(config.storeName);
   const [emailNotifications, setEmailNotifications] = useState(true);
   const [isSavingProfile, setIsSavingProfile] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [pinChangeEmail, setPinChangeEmail] = useState('');
+  const [newPinValue, setNewPinValue] = useState('');
+  const [confirmNewPinValue, setConfirmNewPinValue] = useState('');
+  const [pinModalError, setPinModalError] = useState('');
   const [showQrHelpMenu, setShowQrHelpMenu] = useState(false);
+  const [showClearInventoryModal, setShowClearInventoryModal] = useState(false);
+  const [ownerInviteCode, setOwnerInviteCode] = useState(
+    () => localStorage.getItem('venpro_invite_code') ?? '',
+  );
+
+  useEffect(() => {
+    setOwnerInviteCode(localStorage.getItem('venpro_invite_code') ?? '');
+  }, [profile?.organizationId]);
+
+  const accountEmail = profile?.email || localStorage.getItem(STORAGE_KEYS.ownerProfileEmail) || '';
+
+  const hydrateProfileFromSources = useCallback(() => {
+    const parsedPhone = parseStoredPhone(config.phone || '');
+    setProfileName(profile?.fullName || localStorage.getItem(STORAGE_KEYS.ownerProfileName) || '');
+    setProfileEmail(accountEmail);
+    setProfileCountryCode(parsedPhone.countryCode);
+    setProfilePhone(parsedPhone.number);
+    setCompanyName(config.storeName);
+  }, [accountEmail, config.phone, config.storeName, profile?.fullName]);
+
+  useEffect(() => {
+    hydrateProfileFromSources();
+  }, [hydrateProfileFromSources]);
+
+  useEffect(() => {
+    setCompanyName(config.storeName);
+  }, [config.storeName]);
+
+  const handleSaveProfile = () => {
+    setIsSavingProfile(true);
+    const formattedPhone = formatRegistrationPhone(profileCountryCode, profilePhone);
+
+    setTimeout(() => {
+      onUpdateConfig({
+        ...config,
+        storeName: companyName.trim() || config.storeName,
+        phone: formattedPhone,
+      });
+      localStorage.setItem(STORAGE_KEYS.ownerProfileName, profileName.trim());
+      if (profileEmail.trim()) {
+        localStorage.setItem(STORAGE_KEYS.ownerProfileEmail, profileEmail.trim());
+      }
+
+      setIsSavingProfile(false);
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 2500);
+    }, 600);
+  };
+
+  const openPinChangeModal = () => {
+    setPinChangeEmail(accountEmail);
+    setNewPinValue('');
+    setConfirmNewPinValue('');
+    setPinModalError('');
+    setShowPasswordModal(true);
+  };
+
+  const handleClearInventory = () => {
+    setShowClearInventoryModal(true);
+  };
+
+  const confirmClearInventory = () => {
+    onUpdateProducts([]);
+    onUpdateTransactions([]);
+    setShowClearInventoryModal(false);
+  };
+
+  const handlePinChangeSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setPinModalError('');
+
+    if (!pinChangeEmail.trim() || pinChangeEmail.trim().toLowerCase() !== accountEmail.toLowerCase()) {
+      setPinModalError('El correo no coincide con el registrado en tu cuenta.');
+      return;
+    }
+
+    if (!/^\d{4,6}$/.test(newPinValue)) {
+      setPinModalError('El PIN debe tener entre 4 y 6 dígitos numéricos.');
+      return;
+    }
+
+    if (newPinValue !== confirmNewPinValue) {
+      setPinModalError('Los PIN ingresados no coinciden.');
+      return;
+    }
+
+    onUpdateConfig({ ...config, ownerAccessPin: newPinValue });
+    setShowPasswordModal(false);
+    alert(`Se envió una confirmación del cambio de PIN a ${pinChangeEmail}. Tu nuevo PIN ya está activo.`);
+  };
 
   // Modals state
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
-  const [productForm, setProductForm] = useState<Omit<Product, 'id'> & { unit?: string; expiry?: string; isCompound?: boolean }>({
+  type ProductFormState = Omit<Product, 'id'> & { unit?: string; expiry?: string; isCompound?: boolean };
+
+  const getEmptyProductForm = (): ProductFormState => ({
     code: '',
     name: '',
-    category: '',
+    category: industry === 'tienda' ? CLOTHING_CATEGORIES[0] : '',
     buyPrice: 0,
-    sellPrice: 0,
-    quantity: 0,
-    minStock: 5,
-    location: '',
+    sellPrice: industry === 'tienda' ? 1 : 1,
+    quantity: 10,
+    minStock: industry === 'tienda' ? 5 : 1,
+    location: industry === 'tienda' ? 'Tienda principal' : '',
     image: '',
     unit: 'pza',
     expiry: '',
-    isCompound: false
+    isCompound: false,
+    audience: industry === 'tienda' ? 'Clásicas' : undefined,
+    sizes: industry === 'tienda' ? [] : undefined,
+    colors: industry === 'tienda' ? [] : undefined,
   });
 
+  const [productForm, setProductForm] = useState<ProductFormState>(getEmptyProductForm);
+
   const productImageInputRef = useRef<HTMLInputElement>(null);
+  const dailySalesRef = useRef<DailySalesPanelHandle>(null);
 
   const handleProductImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -275,6 +401,11 @@ export default function OwnerPortal({
     });
   }, [products, searchQuery, categoryFilter, stockLevelFilter]);
 
+  const simpleProducts = useMemo(
+    () => products.filter((p) => !p.isCompound),
+    [products],
+  );
+
   // Unlock pin handler
   const handleUnlock = (e: React.FormEvent) => {
     e.preventDefault();
@@ -290,20 +421,42 @@ export default function OwnerPortal({
   // Product Add / Edit Submit
   const handleProductSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (industry === 'tienda') {
+      if (!productForm.sizes?.length) {
+        alert('Selecciona al menos una talla disponible.');
+        return;
+      }
+      if (!productForm.colors?.length) {
+        alert('Selecciona al menos un color disponible.');
+        return;
+      }
+    }
+
+    const normalizedForm: ProductFormState = {
+      ...productForm,
+      buyPrice: productForm.buyPrice > 0 ? productForm.buyPrice : productForm.sellPrice * 0.55,
+      location: productForm.location || (industry === 'tienda' ? 'Tienda principal' : ''),
+      code:
+        industry === 'restaurante' && !productForm.code.trim()
+          ? `ING-${Date.now().toString().slice(-8)}`
+          : productForm.code.trim(),
+    };
+
     if (editingProduct) {
       // Edit mode
       const updatedProducts = products.map(p => 
-        p.id === editingProduct.id ? { ...p, ...productForm } : p
+        p.id === editingProduct.id ? { ...p, ...normalizedForm } : p
       );
       onUpdateProducts(updatedProducts);
 
       // Log transaction
-      const diff = productForm.quantity - editingProduct.quantity;
+      const diff = normalizedForm.quantity - editingProduct.quantity;
       if (diff !== 0) {
         const tr: StockTransaction = {
           id: 'tr-' + Date.now(),
           productId: editingProduct.id,
-          productName: productForm.name,
+          productName: normalizedForm.name,
           type: diff > 0 ? 'addition' : 'subtraction',
           quantity: Math.abs(diff),
           reason: 'Modificación manual de ficha técnica',
@@ -316,7 +469,8 @@ export default function OwnerPortal({
       // Add mode
       const newProduct: Product = {
         id: 'prod-' + Date.now(),
-        ...productForm
+        ...normalizedForm,
+        unit: normalizedForm.unit,
       };
       onUpdateProducts([...products, newProduct]);
 
@@ -336,21 +490,15 @@ export default function OwnerPortal({
 
     setIsProductModalOpen(false);
     setEditingProduct(null);
-    setProductForm({
-      code: '',
-      name: '',
-      category: '',
-      buyPrice: 0,
-      sellPrice: 0,
-      quantity: 0,
-      minStock: 5,
-      location: '',
-      image: ''
-    });
+    setProductForm(getEmptyProductForm());
   };
 
   // Open Edit Modal
   const openEditModal = (p: Product) => {
+    if (industry === 'restaurante' && p.isCompound) {
+      openCompoundForm(p);
+      return;
+    }
     setEditingProduct(p);
     setProductForm({
       code: p.code,
@@ -362,31 +510,59 @@ export default function OwnerPortal({
       minStock: p.minStock,
       location: p.location || '',
       image: p.image || '',
-      unit: (p as any).unit || 'pza',
-      expiry: (p as any).expiry || '',
-      isCompound: p.isCompound || false
+      unit: (p as ProductFormState).unit || 'pza',
+      expiry: (p as ProductFormState).expiry || '',
+      isCompound: p.isCompound || false,
+      audience: p.audience ?? 'Clásicas',
+      sizes: p.sizes ?? [],
+      colors: p.colors ?? [],
     });
+    setIsProductModalOpen(true);
+  };
+
+  const openSimpleProductForm = () => {
+    setEditingProduct(null);
+    setProductForm(getEmptyProductForm());
     setIsProductModalOpen(true);
   };
 
   // Open Add Product Modal
   const openAddModal = () => {
-    setEditingProduct(null);
-    setProductForm({
-      code: '',
-      name: '',
-      category: '',
-      buyPrice: 0,
-      sellPrice: 1,
-      quantity: 10,
-      minStock: 5,
-      location: '',
-      image: '',
-      unit: 'pza',
-      expiry: '',
-      isCompound: false
-    });
-    setIsProductModalOpen(true);
+    if (industry === 'restaurante') {
+      setShowProductTypeSelectionModal(true);
+      return;
+    }
+    openSimpleProductForm();
+  };
+
+  const resetCompoundForm = () => {
+    setEditingCompoundProduct(null);
+    setRecipeName('');
+    setRecipeImage('');
+    setRecipeCategory('Alimentos');
+    setRecipeSellPrice(0);
+    setCompositionIngredients([]);
+    setRecipeSearchQuery('');
+  };
+
+  const closeCompoundForm = () => {
+    setShowRecipeForm(false);
+    resetCompoundForm();
+  };
+
+  const openCompoundForm = (product?: Product) => {
+    if (product?.isCompound) {
+      setEditingCompoundProduct(product);
+      setRecipeName(product.name);
+      setRecipeImage(product.image ?? '');
+      setRecipeCategory(product.category);
+      setRecipeSellPrice(product.sellPrice);
+      setCompositionIngredients(recipeToCompositionIngredients(product.recipe, products));
+    } else {
+      resetCompoundForm();
+    }
+    setRecipeSearchQuery('');
+    setShowRecipeForm(true);
   };
 
   // Delete product with confirmation
@@ -462,6 +638,32 @@ export default function OwnerPortal({
     setIsStockAdjustmentModalOpen(true);
   };
 
+  const openCompoundSaleFromDashboard = (product: Product) => {
+    if (!isProductAvailableForSale(product, products)) {
+      alert('No hay stock suficiente de ingredientes para vender este platillo compuesto.');
+      return;
+    }
+
+    dailySalesRef.current?.adjustProductQuantity(product.id, 1);
+    document.getElementById('restaurant-daily-sales')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const getDashboardStockStatus = (product: Product) => {
+    if (product.isCompound) {
+      return { label: 'COMPUESTO', badgeClass: 'bg-blue-50 text-blue-600 border-blue-200' };
+    }
+    if (product.quantity <= 0) {
+      return { label: 'AGOTADO', badgeClass: 'bg-[#ffdad6] text-[#ba1a1a] border-[#ba1a1a]/10' };
+    }
+    if (product.quantity <= product.minStock) {
+      return { label: 'BAJO STOCK', badgeClass: 'bg-orange-50 text-orange-700 border-orange-200' };
+    }
+    return { label: 'EN STOCK', badgeClass: 'bg-[#d1f2e5] text-[#0f5132] border-[#00a86a]/10' };
+  };
+
+  const getDashboardProductImage = (product: Product) =>
+    product.image || 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&auto=format&fit=crop&q=60';
+
   // Render Lock Screen if not authorized
   if (isLocked) {
     return (
@@ -531,74 +733,135 @@ export default function OwnerPortal({
     );
   }
 
-  if (showRecipeForm) {
-    const calculatedTotalCost = compositionIngredients.reduce((total, item) => {
-      return total + (item.quantity * item.estimatedCost);
-    }, 0);
 
-    const filteredAddableComponents = addableRecipeComponents.filter(item =>
-      item.name.toLowerCase().includes(recipeSearchQuery.toLowerCase())
+  if (showRecipeForm) {
+    const calculatedTotalCost = compositionIngredients.reduce(
+      (total, item) => total + item.quantity * item.estimatedCost,
+      0,
     );
 
+    const filteredSimpleProducts = simpleProducts.filter(
+      (p) =>
+        p.name.toLowerCase().includes(recipeSearchQuery.toLowerCase()) ||
+        p.code.toLowerCase().includes(recipeSearchQuery.toLowerCase()) ||
+        p.category.toLowerCase().includes(recipeSearchQuery.toLowerCase()),
+    );
+
+    const displaySku = editingCompoundProduct?.code ?? `VEN-${Date.now().toString().slice(-6)}`;
+
     const handleSaveComposition = () => {
-      const updatedProducts = products.map(p => {
-        if (p.id === 'prod-g4' || p.code === '750400' || p.code === '1001004' || p.name.toLowerCase().includes('hamburguesa')) {
-          return {
-            ...p,
-            name: recipeName,
-            image: recipeImage,
-            buyPrice: calculatedTotalCost
-          };
-        }
-        return p;
-      });
-      onUpdateProducts(updatedProducts);
+      if (!recipeName.trim()) {
+        alert('Ingresa el nombre del platillo compuesto.');
+        return;
+      }
+      if (compositionIngredients.length === 0) {
+        alert('Añade al menos una materia prima a la composición.');
+        return;
+      }
+
+      const recipe: RecipeComponent[] = compositionIngredients.map((item, order) => ({
+        productId: item.productId,
+        name: item.name,
+        quantity: item.quantity,
+        unit: item.unit,
+        buyPrice: item.estimatedCost,
+        order,
+      }));
+
+      const buyPrice = calculatedTotalCost;
+      const sellPrice = recipeSellPrice > 0 ? recipeSellPrice : buyPrice * 1.5;
+
+      if (editingCompoundProduct) {
+        onUpdateProducts(
+          products.map((p) =>
+            p.id === editingCompoundProduct.id
+              ? {
+                  ...p,
+                  name: recipeName.trim(),
+                  category: recipeCategory.trim() || 'Alimentos',
+                  image: recipeImage || undefined,
+                  buyPrice,
+                  sellPrice,
+                  recipe,
+                  isCompound: true,
+                }
+              : p,
+          ),
+        );
+      } else {
+        const newProduct: Product = {
+          id: `prod-${Date.now()}`,
+          code: `CMP-${Date.now().toString().slice(-8)}`,
+          name: recipeName.trim(),
+          category: recipeCategory.trim() || 'Alimentos',
+          buyPrice,
+          sellPrice,
+          quantity: 0,
+          minStock: 1,
+          location: 'Cocina',
+          image: recipeImage || undefined,
+          isCompound: true,
+          recipe,
+        };
+        onUpdateProducts([...products, newProduct]);
+
+        const tr: StockTransaction = {
+          id: `tr-${Date.now()}`,
+          productId: newProduct.id,
+          productName: newProduct.name,
+          type: 'addition',
+          quantity: 0,
+          reason: 'Registro de producto compuesto',
+          date: new Date().toISOString(),
+          responsible: 'Propietario',
+        };
+        onUpdateTransactions([tr, ...transactions]);
+      }
 
       setShowSuccessToast(true);
       setTimeout(() => {
         setShowSuccessToast(false);
-        setShowRecipeForm(false);
+        closeCompoundForm();
       }, 1500);
     };
 
-    const handleAddIngredient = (item: typeof addableRecipeComponents[0]) => {
-      setJustAddedNames(prev => [...prev, item.name]);
+    const handleAddIngredient = (product: Product) => {
+      setJustAddedNames((prev) => [...prev, product.id]);
       setTimeout(() => {
-        setJustAddedNames(prev => prev.filter(name => name !== item.name));
+        setJustAddedNames((prev) => prev.filter((id) => id !== product.id));
       }, 1000);
 
-      const existing = compositionIngredients.find(i => i.name === item.name);
+      const existing = compositionIngredients.find((i) => i.productId === product.id);
       if (existing) {
-        setCompositionIngredients(prev =>
-          prev.map(i => i.name === item.name ? { ...i, quantity: i.quantity + 1 } : i)
+        setCompositionIngredients((prev) =>
+          prev.map((i) =>
+            i.productId === product.id
+              ? { ...i, quantity: i.quantity + 1, stock: formatStockDisplay(product) }
+              : i,
+          ),
         );
       } else {
-        const newIng = {
-          id: String(4000 + Math.floor(Math.random() * 5000)),
-          name: item.name,
-          stock: item.stock,
-          quantity: 1,
-          unit: item.unit,
-          estimatedCost: item.estimatedCost
-        };
-        setCompositionIngredients(prev => [...prev, newIng]);
+        setCompositionIngredients((prev) => [
+          ...prev,
+          productToCompositionIngredient(product),
+        ]);
       }
     };
 
-    const handleRemoveIngredient = (id: string) => {
-      setCompositionIngredients(prev => prev.filter(item => item.id !== id));
+    const handleRemoveIngredient = (productId: string) => {
+      setCompositionIngredients((prev) => prev.filter((item) => item.productId !== productId));
     };
 
-    const handleUpdateQuantity = (id: string, qty: number) => {
-      const safeQty = Math.max(1, qty);
-      setCompositionIngredients(prev =>
-        prev.map(item => item.id === id ? { ...item, quantity: safeQty } : item)
+    const handleUpdateQuantity = (productId: string, qty: number) => {
+      const safeQty = Math.max(0.1, qty);
+      setCompositionIngredients((prev) =>
+        prev.map((item) => (item.productId === productId ? { ...item, quantity: safeQty } : item)),
       );
     };
 
     const handleMoveUp = (index: number) => {
       if (index === 0) return;
-      setCompositionIngredients(prev => {
+      setCompositionIngredients((prev) => {
         const next = [...prev];
         const temp = next[index];
         next[index] = next[index - 1];
@@ -607,9 +870,7 @@ export default function OwnerPortal({
       });
     };
 
-    const formatCost = (val: number) => {
-      return '$' + val.toFixed(3);
-    };
+    const formatCost = (val: number) => `${config.currencySymbol}${val.toFixed(3)}`;
 
     return (
       <div className="min-h-screen bg-[#F4F7FA] text-[#081b38] flex flex-col relative pb-32 font-sans applet-embed">
@@ -626,12 +887,12 @@ export default function OwnerPortal({
         <header className="bg-[#002a5c] text-white w-full h-16 flex justify-between items-center px-6 md:px-10 sticky top-0 z-50">
           <div className="flex items-center gap-4">
             <button 
-              onClick={() => setShowRecipeForm(false)}
+              onClick={closeCompoundForm}
               className="hover:bg-white/10 p-2 rounded-full transition-colors flex items-center justify-center cursor-pointer"
             >
-              <Menu className="text-white" size={24} />
+              <ArrowLeft className="text-white" size={24} />
             </button>
-            <span className="text-2xl font-semibold tracking-tight">Venpro</span>
+            <VenproWordmark className="text-2xl" />
           </div>
           <div className="flex items-center gap-4">
             <span className="text-xs font-bold hidden md:block uppercase tracking-wider text-slate-200">Detalles del producto</span>
@@ -682,17 +943,44 @@ export default function OwnerPortal({
                   />
                 </div>
 
-                {/* Interactive Product Name Input */}
-                <div className="flex-grow w-full">
-                  <label className="block text-xs font-bold uppercase tracking-wider text-[#747780] mb-1.5">Nombre del Producto</label>
-                  <input 
-                    type="text"
-                    value={recipeName}
-                    onChange={(e) => setRecipeName(e.target.value)}
-                    className="w-full text-lg md:text-xl font-bold text-[#081b38] bg-white border border-[#c4c6d1] rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#00687b]/20 focus:border-[#00687b] outline-none transition-all placeholder:text-slate-400"
-                    placeholder="Nombre del platillo compuesto..."
-                  />
-                  <p className="text-xs text-[#43474f] mt-1.5 font-medium">SKU: VEN-HE-001 • Categoría: Alimentos</p>
+                <div className="flex-grow w-full space-y-3">
+                  <div>
+                    <label className="block text-xs font-bold uppercase tracking-wider text-[#747780] mb-1.5">Nombre del Producto</label>
+                    <input 
+                      type="text"
+                      value={recipeName}
+                      onChange={(e) => setRecipeName(e.target.value)}
+                      className="w-full text-lg md:text-xl font-bold text-[#081b38] bg-white border border-[#c4c6d1] rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#00687b]/20 focus:border-[#00687b] outline-none transition-all placeholder:text-slate-400"
+                      placeholder="Nombre del platillo compuesto..."
+                    />
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-[#747780] mb-1">Categoría</label>
+                      <input
+                        type="text"
+                        value={recipeCategory}
+                        onChange={(e) => setRecipeCategory(e.target.value)}
+                        className="w-full text-sm font-medium text-[#081b38] bg-white border border-[#c4c6d1] rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#00687b]/20 focus:border-[#00687b] outline-none"
+                        placeholder="Ej. Alimentos, Platillos"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold uppercase tracking-wider text-[#747780] mb-1">
+                        Precio venta ({config.currencySymbol})
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={recipeSellPrice || ''}
+                        onChange={(e) => setRecipeSellPrice(parseFloat(e.target.value) || 0)}
+                        className="w-full text-sm font-medium text-[#081b38] bg-white border border-[#c4c6d1] rounded-lg px-3 py-2 focus:ring-2 focus:ring-[#00687b]/20 focus:border-[#00687b] outline-none font-mono"
+                        placeholder={calculatedTotalCost > 0 ? (calculatedTotalCost * 1.5).toFixed(2) : '0.00'}
+                      />
+                    </div>
+                  </div>
+                  <p className="text-xs text-[#43474f] font-medium">SKU: {displaySku}</p>
                 </div>
               </div>
             </section>
@@ -715,7 +1003,7 @@ export default function OwnerPortal({
                 ) : (
                   compositionIngredients.map((item, index) => (
                     <div 
-                      key={item.id} 
+                      key={item.productId} 
                       className="flex items-center justify-between p-4 border border-[#c4c6d1] rounded-lg bg-white hover:border-[#00B8D9] hover:shadow-xs transition-all duration-200"
                     >
                       <div className="flex items-center gap-3">
@@ -730,7 +1018,7 @@ export default function OwnerPortal({
                         </button>
                         <div>
                           <p className="font-semibold text-[#081b38] text-sm md:text-base">{item.name}</p>
-                          <p className="text-xs text-[#747780]">ID: {item.id} • Stock: {item.stock}</p>
+                          <p className="text-xs text-[#747780]">Stock: {item.stock}</p>
                         </div>
                       </div>
 
@@ -739,15 +1027,16 @@ export default function OwnerPortal({
                           <input 
                             className="w-16 border border-[#c4c6d1] rounded px-2 py-1 text-center font-sans focus:ring-2 focus:ring-[#00687b]/20 focus:border-[#00687b] outline-none text-sm" 
                             type="number" 
-                            min="1"
+                            min="0.1"
+                            step="0.1"
                             value={item.quantity}
-                            onChange={(e) => handleUpdateQuantity(item.id, parseInt(e.target.value) || 1)}
+                            onChange={(e) => handleUpdateQuantity(item.productId, parseFloat(e.target.value) || 0.1)}
                           />
                           <span className="font-sans text-[#43474f] text-sm w-8">{item.unit}</span>
                         </div>
                         <button 
                           type="button"
-                          onClick={() => handleRemoveIngredient(item.id)}
+                          onClick={() => handleRemoveIngredient(item.productId)}
                           className="text-[#ba1a1a] hover:bg-[#ffdad6] p-2 rounded transition-colors cursor-pointer"
                         >
                           <Trash2 size={20} />
@@ -787,46 +1076,53 @@ export default function OwnerPortal({
 
               {/* Filtered List */}
               <div className="flex-grow space-y-2 max-h-[500px] overflow-y-auto pr-1">
-                {filteredAddableComponents.length === 0 ? (
+                {simpleProducts.length === 0 ? (
+                  <div className="text-center py-8 text-[#747780] text-xs leading-relaxed px-4">
+                    Aún no hay materias primas registradas. Cierra este formulario y añade artículos simples primero.
+                  </div>
+                ) : filteredSimpleProducts.length === 0 ? (
                   <div className="text-center py-8 text-[#747780] text-xs">
-                    No se encontraron artículos simples matching su búsqueda.
+                    No se encontraron artículos simples con esa búsqueda.
                   </div>
                 ) : (
-                  filteredAddableComponents.map((item, index) => (
+                  filteredSimpleProducts.map((product) => {
+                    const iconName = getIngredientIconName(product.category);
+                    return (
                     <div 
-                      key={index}
-                      onClick={() => handleAddIngredient(item)}
+                      key={product.id}
+                      onClick={() => handleAddIngredient(product)}
                       className="flex items-center justify-between p-3 border border-[#c4c6d1] rounded hover:bg-white border-b hover:border-[#00B8D9] transition-all group cursor-pointer"
                     >
                       <div className="flex items-center gap-3">
                         <div className="w-10 h-10 rounded bg-[#e0e8ff] flex items-center justify-center text-[#00687b]">
-                          {item.iconName === 'eco' && <Leaf size={20} />}
-                          {item.iconName === 'egg' && <Egg size={20} />}
-                          {item.iconName === 'kitchen' && <Droplet size={20} />}
-                          {item.iconName === 'restaurant' && <Utensils size={20} />}
-                          {item.iconName === 'lunch_dining' && <Flame size={20} />}
+                          {iconName === 'eco' && <Leaf size={20} />}
+                          {iconName === 'egg' && <Egg size={20} />}
+                          {iconName === 'kitchen' && <Droplet size={20} />}
+                          {iconName === 'restaurant' && <Utensils size={20} />}
+                          {iconName === 'lunch_dining' && <Flame size={20} />}
                         </div>
                         <div>
-                          <p className="font-bold text-[#081b38] text-sm">{item.name}</p>
-                          <p className="text-xs text-[#747780]">Stock: {item.stock}</p>
+                          <p className="font-bold text-[#081b38] text-sm">{product.name}</p>
+                          <p className="text-xs text-[#747780]">Stock: {formatStockDisplay(product)}</p>
                         </div>
                       </div>
                       <button 
                         type="button"
                         className={`w-8 h-8 rounded-full flex items-center justify-center hover:scale-110 active:scale-95 transition-all font-bold text-sm ${
-                          justAddedNames.includes(item.name)
+                          justAddedNames.includes(product.id)
                             ? 'bg-emerald-500 text-white'
                             : 'bg-[#50dcff] hover:bg-[#00B8D9] text-[#005f71] hover:text-white'
                         }`}
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleAddIngredient(item);
+                          handleAddIngredient(product);
                         }}
                       >
-                        {justAddedNames.includes(item.name) ? <Check size={14} /> : '+'}
+                        {justAddedNames.includes(product.id) ? <Check size={14} /> : '+'}
                       </button>
                     </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
 
@@ -853,7 +1149,7 @@ export default function OwnerPortal({
             <div className="flex gap-4 w-full md:w-auto">
               <button 
                 type="button"
-                onClick={() => setShowRecipeForm(false)}
+                onClick={closeCompoundForm}
                 className="flex-1 md:flex-none px-6 py-3 font-bold text-[#081b38] border border-[#c4c6d1] rounded-lg hover:bg-[#f1f3ff] transition-colors cursor-pointer text-sm"
               >
                 Descartar Cambios
@@ -872,195 +1168,136 @@ export default function OwnerPortal({
     );
   }
 
-  return (
-    <div className="min-h-screen bg-[#f9f9ff] text-[#081b38] flex flex-col relative overflow-x-hidden font-sans">
-      
-      {/* Fixed Top Bar Navigation */}
-      <header className="bg-[#002A5C] text-white fixed top-0 left-0 right-0 z-50 h-16 flex items-center justify-between px-6 md:px-8 border-b border-[#002A5C]/20 shadow-sm">
-        <div className="flex items-center gap-3">
-          <button className="text-white md:hidden hover:bg-white/10 p-2 rounded-lg transition" title="Menú">
-            <svg viewBox="0 0 24 24" className="w-6 h-6" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <rect x="2.2" y="13" width="3.5" height="8" rx="1" fill="#00AED1" />
-              <rect x="6.9" y="9" width="3.5" height="12" rx="1" fill="#00AED1" />
-              <rect x="11.6" y="5.5" width="3.5" height="15.5" rx="1" fill="#48F7A6" />
-              <rect x="16.3" y="2" width="3.5" height="19" rx="1" fill="#48F7A6" />
-            </svg>
-          </button>
-          <div className="flex items-center gap-2">
-            <span className="text-xl font-extrabold text-[#50dcff] tracking-wider uppercase font-sans">Venpro</span>
-          </div>
+  const sidebarNavItems: { tab: TabType; label: string; icon: React.ReactNode }[] = [
+    { tab: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={18} /> },
+    { tab: 'historial', label: 'Historial', icon: <History size={18} /> },
+    { tab: 'personal', label: 'Personal', icon: <Users size={18} /> },
+    { tab: 'qr', label: 'Enlace QR', icon: <QrCode size={18} /> },
+    { tab: 'inventario', label: 'Stock', icon: <Package size={18} /> },
+    { tab: 'finanzas', label: 'Ventas', icon: <Coins size={18} /> },
+    { tab: 'config', label: 'Perfil', icon: <User size={18} /> },
+    { tab: 'ayuda', label: 'Ayuda', icon: <HelpCircle size={18} /> },
+  ];
 
-          {/* Desktop Navigation Links inside header */}
-          <nav className="hidden lg:flex items-center ml-6 gap-1">
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'dashboard' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Dashboard
-            </button>
-            <button
-              onClick={() => setActiveTab('historial')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'historial' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Historial
-            </button>
-            <button
-              onClick={() => setActiveTab('personal')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'personal' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Personal
-            </button>
-            <button
-              onClick={() => setActiveTab('qr')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'qr' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Enlace QR
-            </button>
-            <button
-              onClick={() => setActiveTab('inventario')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'inventario' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Stock
-            </button>
-            <button
-              onClick={() => setActiveTab('finanzas')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'finanzas' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Ventas
-            </button>
-            <button
-              onClick={() => setActiveTab('config')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'config' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Perfil
-            </button>
-            <button
-              onClick={() => setActiveTab('ayuda')}
-              className={`px-3 py-2 rounded-xl text-xs font-bold transition-all ${
-                activeTab === 'ayuda' 
-                  ? 'bg-white/15 text-white shadow-sm' 
-                  : 'text-slate-300 hover:text-white hover:bg-white/5'
-              }`}
-            >
-              Ayuda
-            </button>
-          </nav>
+  return (
+    <div className="min-h-screen bg-[#f9f9ff] text-[#081b38] flex items-stretch font-sans">
+
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+          aria-hidden="true"
+        />
+      )}
+
+      {/* Left Sidebar */}
+      <aside
+        className={`fixed lg:sticky top-0 left-0 z-50 w-64 shrink-0 self-stretch min-h-screen h-screen lg:h-auto bg-[#002A5C] text-white flex flex-col border-r border-white/10 shadow-lg lg:shadow-none transition-transform duration-300 ease-in-out ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
+        }`}
+      >
+        <div className="p-5 border-b border-white/10 flex items-start justify-between shrink-0">
+          <VenproWordmark showTagline={activeTab === 'dashboard'} />
+          <button
+            type="button"
+            onClick={() => setSidebarOpen(false)}
+            className="lg:hidden p-1.5 rounded-lg hover:bg-white/10 transition"
+            aria-label="Cerrar menú"
+          >
+            <X size={20} />
+          </button>
         </div>
 
-        {/* Business and Profile Info on Right Side */}
-        <div className="flex items-center gap-4">
-          <div className="hidden md:flex flex-col text-right">
-            <span className="text-sm font-bold tracking-tight">{config.storeName}</span>
-            <span className="text-[10px] text-[#abc7ff] tracking-wider uppercase font-semibold">Portal del Propietario</span>
-          </div>
-          <div className="flex items-center gap-2 bg-[#001c3d] hover:bg-[#00244d] py-1.5 px-3 rounded-xl border border-white/10 transition-all cursor-pointer">
-            <img 
-              src={profileImage} 
-              alt="Administrador" 
-              className="w-8 h-8 rounded-full object-cover border border-[#50dcff]/30"
+        <div className="px-4 py-4 border-b border-white/10 shrink-0">
+          <div className="flex items-center gap-3 bg-[#001c3d] p-3 rounded-xl border border-white/10">
+            <img
+              src={profileImage}
+              alt={config.storeName}
+              className="w-11 h-11 rounded-xl object-cover border border-[#50dcff]/30 shrink-0"
               referrerPolicy="no-referrer"
             />
-            <div className="hidden sm:flex flex-col text-left">
-              <span className="text-xs font-bold leading-tight text-white">{profileName}</span>
-              <span className="text-[9px] leading-tight text-[#abc7ff] font-medium">Administrador</span>
+            <div className="text-left min-w-0">
+              <p className="text-sm font-bold leading-tight text-white truncate">{config.storeName}</p>
+              <p className="text-[10px] leading-tight text-[#abc7ff] font-medium uppercase tracking-wider">
+                Portal del Propietario
+              </p>
             </div>
           </div>
-          {/* Salir button removed as requested */}
         </div>
-      </header>
 
-      {/* Fixed Bottom Navigation for Mobile */}
-      <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#002A5C] border-t border-white/10 md:hidden z-50 flex justify-around items-center px-2 shadow-xl">
-        <button
-          onClick={() => setActiveTab('dashboard')}
-          className={`flex flex-col items-center justify-center gap-1 py-1 px-2.5 rounded-xl transition ${
-            activeTab === 'dashboard' ? 'text-[#50dcff]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <LayoutDashboard size={18} />
-          <span className="text-[9px] font-bold">Inicio</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('historial')}
-          className={`flex flex-col items-center justify-center gap-1 py-1 px-2.5 rounded-xl transition ${
-            activeTab === 'historial' ? 'text-[#50dcff]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <History size={18} />
-          <span className="text-[9px] font-bold">Historial</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('inventario')}
-          className={`flex flex-col items-center justify-center gap-1 py-1 px-2.5 rounded-xl transition ${
-            activeTab === 'inventario' ? 'text-[#50dcff]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <Package size={18} />
-          <span className="text-[9px] font-bold">Stock</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('finanzas')}
-          className={`flex flex-col items-center justify-center gap-1 py-1 px-2.5 rounded-xl transition ${
-            activeTab === 'finanzas' ? 'text-[#50dcff]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <Coins size={18} />
-          <span className="text-[9px] font-bold">Ventas</span>
-        </button>
-        <button
-          onClick={() => setActiveTab('config')}
-          className={`flex flex-col items-center justify-center gap-1 py-1 px-2.5 rounded-xl transition ${
-            activeTab === 'config' ? 'text-[#50dcff]' : 'text-gray-400 hover:text-white'
-          }`}
-        >
-          <User size={18} />
-          <span className="text-[9px] font-bold">Perfil</span>
-        </button>
-      </nav>
-
-      {/* Main Layout containing dynamic sheets shifted on desktop screen */}
-      <main className="flex-grow pt-20 pb-24 md:pb-8 bg-[#f9f9ff] flex flex-col min-h-screen">
-        <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-6 flex-grow">
-          
-          {/* Back Navigation Bar */}
-          <div className="flex items-center justify-between pb-2">
+        <nav className="flex-1 py-3 overflow-y-auto min-h-0">
+          {sidebarNavItems.map(({ tab, label, icon }) => (
             <button
-              onClick={onBack}
-              className="flex items-center gap-2 text-sm text-[#002A5C] hover:text-[#00B8D9] font-bold transition-all group px-4 py-2 rounded-xl bg-white border border-[#c4c6d1] shadow-sm hover:shadow-md active:scale-95 duration-200"
+              key={tab}
+              type="button"
+              onClick={() => handleTabChange(tab)}
+              className={`w-full flex items-center gap-3 px-5 py-3 text-sm font-bold transition-all ${
+                activeTab === tab
+                  ? 'bg-white/10 text-[#50dcff] border-l-4 border-[#50dcff]'
+                  : 'text-slate-300 hover:bg-white/5 hover:text-white border-l-4 border-transparent'
+              }`}
             >
-              <ArrowLeft size={16} className="transition-transform group-hover:-translate-x-1" />
-              <span>Volver Atrás</span>
+              {icon}
+              {label}
             </button>
-            <span className="text-xs text-gray-500 font-mono hidden sm:inline-block">Tipo de Acceso: <strong>Propietario</strong></span>
+          ))}
+        </nav>
+
+        <div className="p-4 border-t border-white/10 shrink-0 mt-auto">
+          <button
+            type="button"
+            onClick={() => {
+              setSidebarOpen(false);
+              onLogout();
+            }}
+            className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl text-sm font-bold text-red-300 hover:text-white hover:bg-red-500/15 border border-red-500/20 transition-all active:scale-95"
+          >
+            <LogOut size={18} />
+            Cerrar Sesión
+          </button>
+        </div>
+      </aside>
+
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col min-w-0 w-full">
+
+        {/* Mobile top bar */}
+        <header className="lg:hidden fixed top-0 right-0 left-0 z-30 h-14 bg-[#002A5C] flex items-center justify-between px-4 border-b border-white/10 shadow-sm">
+          <div className="flex items-center gap-2 min-w-0">
+            <button
+              type="button"
+              onClick={() => setSidebarOpen(true)}
+              className="p-2 rounded-lg hover:bg-white/10 transition text-white shrink-0"
+              aria-label="Abrir menú"
+            >
+              <Menu size={22} />
+            </button>
+            <VenproWordmark className="text-lg" />
           </div>
+          <img
+            src={VENPRO_LOGO_SRC}
+            alt="Venpro"
+            className="w-8 h-8 object-contain shrink-0"
+          />
+        </header>
+
+        <main className="flex-1 pt-14 lg:pt-0 pb-8 bg-[#f9f9ff] w-full">
+        <div className="p-4 md:p-8 max-w-7xl w-full mx-auto space-y-6">
+          
+          {/* Access label (sin botón atrás en el dashboard) */}
+          {activeTab !== 'dashboard' && (
+            <div className="flex items-center justify-between pb-2">
+              <button
+                onClick={onBack}
+                className="flex items-center gap-2 text-sm text-[#002A5C] hover:text-[#00B8D9] font-bold transition-all group px-4 py-2 rounded-xl bg-white border border-[#c4c6d1] shadow-sm hover:shadow-md active:scale-95 duration-200"
+              >
+                <ArrowLeft size={16} className="transition-transform group-hover:-translate-x-1" />
+                <span>Volver Atrás</span>
+              </button>
+              <span className="text-xs text-gray-500 font-mono hidden sm:inline-block">Tipo de Acceso: <strong>Propietario</strong></span>
+            </div>
+          )}
           
           {/* Urgent Alert Banner (Dips under min threshold) */}
           {stats.lowStockItems > 0 && activeTab !== 'config' && activeTab !== 'dashboard' && (
@@ -1160,8 +1397,14 @@ export default function OwnerPortal({
 
                   {/* Section Title */}
                   <div className="pt-2 text-left border-t border-slate-100">
-                    <h2 className="text-lg font-bold text-[#002a5c] tracking-tight">Detalles del producto</h2>
-                    <p className="text-xs text-slate-400 mt-0.5">Especifica las propiedades principales en la ficha del catálogo</p>
+                    <h2 className="text-lg font-bold text-[#002a5c] tracking-tight">
+                      {industry === 'tienda' ? 'Detalles de la prenda' : 'Detalles del producto'}
+                    </h2>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                      {industry === 'tienda'
+                        ? 'Registra la prenda con categoría, tallas, colores y código de barras'
+                        : 'Especifica las propiedades principales en la ficha del catálogo'}
+                    </p>
                   </div>
 
                   {/* Details Grid */}
@@ -1169,7 +1412,7 @@ export default function OwnerPortal({
                     {/* Product Name */}
                     <div className="md:col-span-2 space-y-2">
                       <label htmlFor="prod-name-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Nombre del Producto
+                        {industry === 'tienda' ? 'Nombre de la Prenda' : 'Nombre del Producto'}
                       </label>
                       <input 
                         id="prod-name-field"
@@ -1178,43 +1421,28 @@ export default function OwnerPortal({
                         value={productForm.name}
                         onChange={(e) => setProductForm({ ...productForm, name: e.target.value })}
                         className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38] placeholder:text-slate-300"
-                        placeholder="Ej: Café Espresso Premium"
+                        placeholder={industry === 'tienda' ? 'Ej: Blusa manga larga lino' : 'Ej: Café Espresso Premium'}
                       />
                     </div>
 
-                    {/* Barcode / EAN */}
-                    <div className="space-y-2">
-                      <label htmlFor="prod-code-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Código de Barras / SKU
-                      </label>
-                      <input 
-                        id="prod-code-field"
-                        type="text"
-                        required
-                        value={productForm.code}
-                        onChange={(e) => setProductForm({ ...productForm, code: e.target.value })}
-                        className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38] font-mono"
-                        placeholder="Ej: 7501055..."
-                      />
-                    </div>
-
-                    {/* Category */}
-                    <div className="space-y-2">
-                      <label htmlFor="prod-category-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Categoría
-                      </label>
-                      <input 
-                        id="prod-category-field"
-                        type="text"
-                        required
-                        value={productForm.category}
-                        onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
-                        className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38]"
-                        placeholder="Ej: Bebidas, Postres"
-                      />
-                    </div>
-
-
+                    {industry === 'tienda' ? (
+                      <ClothingProductFields productForm={productForm} setProductForm={setProductForm} />
+                    ) : (
+                      <div className="md:col-span-2 space-y-2">
+                        <label htmlFor="prod-category-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
+                          Categoría
+                        </label>
+                        <input
+                          id="prod-category-field"
+                          type="text"
+                          required
+                          value={productForm.category}
+                          onChange={(e) => setProductForm({ ...productForm, category: e.target.value })}
+                          className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38]"
+                          placeholder="Ej: Carnes, Lácteos, Verduras"
+                        />
+                      </div>
+                    )}
 
                     {/* Retail Unit */}
                     <div className="space-y-2">
@@ -1236,13 +1464,13 @@ export default function OwnerPortal({
                     {/* Quantity */}
                     <div className="space-y-2">
                       <label htmlFor="prod-qty-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Cantidad Inicial
+                        {industry === 'tienda' ? 'Cantidad Disponible' : 'Cantidad Inicial'}
                       </label>
                       <div className="relative">
                         <input 
                           id="prod-qty-field"
                           type="number"
-                          step="0.1"
+                          step={industry === 'tienda' ? '1' : '0.1'}
                           required
                           min="0"
                           value={productForm.quantity}
@@ -1255,48 +1483,50 @@ export default function OwnerPortal({
                       </div>
                     </div>
 
-                    {/* Unit Selector */}
-                    <div className="space-y-2">
-                      <label htmlFor="prod-unit-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Unidad de Medida
-                      </label>
-                      <div className="relative">
-                        <select 
-                          id="prod-unit-field"
-                          value={productForm.unit || 'pza'}
-                          onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
-                          className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38] appearance-none"
-                        >
-                          <option value="pza">Piezas / Unidades</option>
-                          <option value="kg">Kilogramos (kg)</option>
-                          <option value="oz">Onzas (oz)</option>
-                          <option value="lb">Libras (lb)</option>
-                          <option value="gr">Gramos (gr)</option>
-                        </select>
-                        <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-                          <ChevronRight size={16} className="transform rotate-90" />
-                        </span>
-                      </div>
-                    </div>
+                    {industry !== 'tienda' && (
+                      <>
+                        <div className="space-y-2">
+                          <label htmlFor="prod-unit-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
+                            Unidad de Medida
+                          </label>
+                          <div className="relative">
+                            <select
+                              id="prod-unit-field"
+                              value={productForm.unit || 'pza'}
+                              onChange={(e) => setProductForm({ ...productForm, unit: e.target.value })}
+                              className="w-full px-4 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38] appearance-none"
+                            >
+                              <option value="pza">Piezas / Unidades</option>
+                              <option value="kg">Kilogramos (kg)</option>
+                              <option value="oz">Onzas (oz)</option>
+                              <option value="lb">Libras (lb)</option>
+                              <option value="gr">Gramos (gr)</option>
+                            </select>
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                              <ChevronRight size={16} className="transform rotate-90" />
+                            </span>
+                          </div>
+                        </div>
 
-                    {/* Expiration Date */}
-                    <div className="space-y-2">
-                      <label htmlFor="prod-expiry-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
-                        Fecha de Caducidad <span className="text-[10px] font-normal text-slate-400 capitalize">(Opcional)</span>
-                      </label>
-                      <div className="relative">
-                        <input 
-                          id="prod-expiry-field"
-                          type="date"
-                          value={productForm.expiry || ''}
-                          onChange={(e) => setProductForm({ ...productForm, expiry: e.target.value })}
-                          className="w-full pl-4 pr-10 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38]"
-                        />
-                        <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
-                          <Calendar size={18} />
-                        </span>
-                      </div>
-                    </div>
+                        <div className="space-y-2">
+                          <label htmlFor="prod-expiry-field" className="text-xs font-bold uppercase tracking-wider text-[#002a5c] block">
+                            Fecha de Caducidad <span className="text-[10px] font-normal text-slate-400 capitalize">(Opcional)</span>
+                          </label>
+                          <div className="relative">
+                            <input
+                              id="prod-expiry-field"
+                              type="date"
+                              value={productForm.expiry || ''}
+                              onChange={(e) => setProductForm({ ...productForm, expiry: e.target.value })}
+                              className="w-full pl-4 pr-10 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38]"
+                            />
+                            <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+                              <Calendar size={18} />
+                            </span>
+                          </div>
+                        </div>
+                      </>
+                    )}
 
                     {/* Min Alert Stock */}
                     <div className="space-y-2">
@@ -1308,15 +1538,33 @@ export default function OwnerPortal({
                           id="prod-min-field"
                           type="number"
                           required
-                          min="1"
+                          min="0"
+                          step={industry === 'restaurante' ? '0.1' : '1'}
                           value={productForm.minStock}
-                          onChange={(e) => setProductForm({ ...productForm, minStock: parseInt(e.target.value, 10) || 5 })}
+                          onChange={(e) => {
+                            const raw = e.target.value;
+                            if (raw === '') {
+                              setProductForm({ ...productForm, minStock: 0 });
+                              return;
+                            }
+                            const parsed = industry === 'restaurante'
+                              ? parseFloat(raw)
+                              : parseInt(raw, 10);
+                            if (!Number.isNaN(parsed) && parsed >= 0) {
+                              setProductForm({ ...productForm, minStock: parsed });
+                            }
+                          }}
                           className="w-full pl-4 pr-10 py-3 rounded-xl border border-[#c4c6d1] bg-white text-sm focus:outline-none focus:ring-2 focus:ring-[#00b8d9]/20 focus:border-[#00b8d9] transition-all text-[#081b38] font-mono"
                         />
                         <span className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
                           <Bell size={18} />
                         </span>
                       </div>
+                      {industry === 'restaurante' && (
+                        <p className="text-[10px] text-slate-400 leading-relaxed">
+                          Define el umbral de alerta en la unidad del producto (ej. 0.5 kg, 2 L). Puede ser cualquier valor desde 0.
+                        </p>
+                      )}
                     </div>
 
 
@@ -1348,7 +1596,7 @@ export default function OwnerPortal({
                       className="w-full sm:w-auto px-10 py-3 bg-[#00b8d9] text-white rounded-xl text-sm font-bold shadow-md hover:brightness-105 active:scale-[0.98] transition-all flex items-center justify-center gap-2 cursor-pointer"
                     >
                       <Save size={16} />
-                      <span>{editingProduct ? 'Guardar Cambios' : 'Guardar Producto'}</span>
+                      <span>{editingProduct ? 'Guardar Cambios' : industry === 'tienda' ? 'Guardar Prenda' : 'Guardar Producto'}</span>
                     </button>
                   </div>
                 </form>
@@ -1356,40 +1604,47 @@ export default function OwnerPortal({
             </motion.div>
           ) : (
             <>
-            {/* Dashboard Tab */}
-            {activeTab === 'dashboard' && (() => {
-            const defaultCarne: Product = { id: 'rest-gourmet-1', code: '1001001', name: 'Carne de Res', category: 'Carne', buyPrice: 3.5, sellPrice: 8.99, quantity: 2.5, minStock: 15, location: 'Cámara Fría A', image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuAMCpg5HM-5dVQVev9eTvhD0KTnX9u_v993yhCGjLMdctdcQMocvyHI1POElLDcTD5vmtHSLjjyaRQxk9rGk8z9O4E8kA5xKWA-4hnJJszW_RYrr2dFa0FaMPz_cW8_TbGFzXNq04EeT9BLRzAzRDoqslV9ontQr52rF3-kjYj9yjuQyImHX5qlZWm7AQ9ALfkncb5QYAvKup8VI2FOpAQRFlya0DQLAUpb4MQC0n7EqD4w4FXRGsULEJlcf_yXSuqPzgtvkFDLLEmO' };
-            const defaultPan: Product = { id: 'rest-gourmet-2', code: '1001002', name: 'Pan Brioche', category: 'Panadería', buyPrice: 1.2, sellPrice: 3.5, quantity: 15, minStock: 50, location: 'Cocina - Estación de Pan', image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCWly33-2gCelcUtumhdP7xDc8w8WV7FqhxREPzP_-t3S5DEbO6VC0W9IStdirgx2xSo7eNyJhNcNGnTZP60Baz2y_beMrH48sHF66xP_zdtnjezp_KZeR6N8xysdFct3YFaqY_GUTnW8ZearjC-1CSRKzzh2NoxKTUzZipkXFoltCFl2v51HDCyKgwAMy1pV8t_Yf2Vyg4d2WWeyf8kebiAaIcpTVuDkoxNFr3TRzEGaIdXcxeLjdhj_B03x-USg8L0DBiRLiSOcsc' };
-            const defaultPotato: Product = { id: 'rest-gourmet-3', code: '1001003', name: 'Papa Russet', category: 'Vegetales', buyPrice: 0.8, sellPrice: 2.2, quantity: 84, minStock: 20, location: 'Almacén de Verduras', image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCUxpBjhyugH1insprfBd0H7FjE0SIpCzGhdQEuoHdR3RhkSCwdr9-2_g6m_hveZKEghUnP4FSE74E5PFxpv6WzXHG_boCYqaaNph0Z0uGx0WYMsoYC-PKxCxsyksYMnLWsOpPIut892JwtCtQ_uUJthZliuGeoqnQNRTVJ313NLfwHKfdmzhvISXT3tZ9fF__ak6xydgnSPM6Cjv10drhksI9DPWP1sQKRsK9kQFXw8jOFkzR5hm_3SrCk1zzfZVj-D0XFzARs9PHs' };
-            const defaultBurger: Product = { id: 'rest-gourmet-4', code: '1001004', name: 'Hamburguesa Clásica', category: 'Platillos', buyPrice: 4.7, sellPrice: 9.99, quantity: 12, minStock: 30, location: 'Cocina - Línea caliente', image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuCmGR9cJjDs6fXtuH8nZy2ecuYC7bfFODJXRQB9VB8ADjGDpIhwajE2QweA_muC6irgYVXQ3UYSaevGrQzAp04OIO88dtFNU13reBKBpyx0ZuJbaIS3O4dEyGq6v1Y7_bxb5n83KWnHRzAhDb93Ln-I2kvppSlkT3WDMQe3wra45_xgNz3OBO42xGjYjmA2PcU-79cR2QwIutUhhMFFEw4eg-RBeuhb8Od9JrEdDctSdsnRmSlBnYLRdigrRPNSnY0raZfzkcYabcix' };
-            const defaultTomato: Product = { id: 'rest-gourmet-5', code: '1001005', name: 'Tomate Saladet', category: 'Vegetales', buyPrice: 1.1, sellPrice: 2.8, quantity: 8.2, minStock: 5, location: 'Almacén de Verduras', image: 'https://lh3.googleusercontent.com/aida-public/AB6AXuC2fxPQYU8hWOOGdBxIDeJL5rlGV-WeNfNz_iIOG6hP7MiyEXqlYm8wnEDJjbbL-Ii6U0OjIpBfgLoi5dUrUGFicOGVwJ3KO0R8eZlyv8lXMLc0nk-q2t9u_Q9ogCL98uTjk7Bm7leo2-1TEHXFaobBWD6tMC33R6pMxvXi3gQTJqv85ql-bBDPnCURS5OPMLfwsUOqnMsEPJL_95hZqFcVuZQpGbUxHbkGdK9fqKbM_rYqsxeVh34A6uXfnkfXiecjXm6m8ulVSWT9' };
+            {/* Dashboard Tab — Tienda de ropa */}
+            {activeTab === 'dashboard' && industry === 'tienda' && (
+              <ClothingStoreDashboard
+                config={config}
+                products={products}
+                sales={sales}
+                transactions={transactions}
+                stats={{ totalItems: stats.totalItems, lowStockItems: stats.lowStockItems }}
+                categories={categories}
+                categoryFilter={categoryFilter}
+                searchQuery={searchQuery}
+                filteredProducts={filteredProducts}
+                onCategoryFilterChange={setCategoryFilter}
+                onSearchQueryChange={setSearchQuery}
+                onAddProduct={() => openAddModal()}
+                onEditProduct={openEditModal}
+                onDeleteProduct={handleDeleteProduct}
+                onUpdateProducts={onUpdateProducts}
+                onUpdateSales={onUpdateSales}
+                onUpdateTransactions={onUpdateTransactions}
+              />
+            )}
 
-            const findDashboardProduct = (code: string, nameMatch: string) =>
-              products.find(p => p.code === code || p.name.toLowerCase().includes(nameMatch));
-
-            const carneResProduct = findDashboardProduct('1001001', 'carne de res');
-            const panBriocheProduct = findDashboardProduct('1001002', 'pan brioche');
-            const papaRussetProduct = findDashboardProduct('1001003', 'papa russet');
-            const hamburguesaProduct = findDashboardProduct('1001004', 'hamburguesa');
-            const tomateSaladetProduct = findDashboardProduct('1001005', 'tomate saladet');
-
-            const carneRes = carneResProduct ?? defaultCarne;
-            const panBrioche = panBriocheProduct ?? defaultPan;
-            const papaRusset = papaRussetProduct ?? defaultPotato;
-            const hamburguesa = hamburguesaProduct ?? defaultBurger;
-            const tomateSaladet = tomateSaladetProduct ?? defaultTomato;
-
-            // Dynamic computations based on current status
-            const totalRevenueToday = sales.reduce((tot, s) => {
+            {/* Dashboard Tab — Restaurante gourmet */}
+            {activeTab === 'dashboard' && industry === 'restaurante' && (() => {
+            const today = new Date();
+            const todaySales = sales.filter((s) => {
               const d = new Date(s.date);
-              const today = new Date();
-              if (d.getDate() === today.getDate() && d.getMonth() === today.getMonth() && d.getFullYear() === today.getFullYear()) {
-                return tot + s.totalAmount;
-              }
-              return tot;
-            }, 0) || 12450.00;
+              return (
+                d.getDate() === today.getDate() &&
+                d.getMonth() === today.getMonth() &&
+                d.getFullYear() === today.getFullYear()
+              );
+            });
+            const totalRevenueToday = todaySales.reduce((tot, s) => tot + s.totalAmount, 0);
+            const stockDeductionToday = todaySales.reduce(
+              (sum, s) => sum + s.items.reduce((itemSum, item) => itemSum + item.quantity, 0),
+              0,
+            );
 
-            const burgerSafetyPercentage = Math.min(100, Math.round((carneRes.quantity / 15) * 100));
+            const lowStockProducts = products.filter(p => p.quantity <= p.minStock);
 
             return (
               <motion.div
@@ -1406,7 +1661,7 @@ export default function OwnerPortal({
                       Bienvenido: {config.storeName}
                     </h2>
                     <p className="text-sm text-gray-500 mt-1 font-medium">
-                      Gestión de inventario y ventas para '{config.storeName}'
+                      {getIndustryWelcomeSubtitle('restaurante')}
                     </p>
                   </div>
                   <button 
@@ -1434,10 +1689,12 @@ export default function OwnerPortal({
                         <span className="text-3xl md:text-4xl font-extrabold text-[#002A5C] block tracking-tight">
                           {config.currencySymbol}{totalRevenueToday.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                         </span>
-                        <div className="flex items-center gap-2 text-[#00a86a] font-bold text-sm bg-emerald-50 border border-emerald-100 py-1.5 px-3 rounded-lg w-fit">
-                          <TrendingUp size={16} />
-                          <span>Deducción de Stock: -42 kg / unidades</span>
-                        </div>
+                        {stockDeductionToday > 0 && (
+                          <div className="flex items-center gap-2 text-[#00a86a] font-bold text-sm bg-emerald-50 border border-emerald-100 py-1.5 px-3 rounded-lg w-fit">
+                            <TrendingUp size={16} />
+                            <span>Deducción de Stock: -{stockDeductionToday} uds</span>
+                          </div>
+                        )}
                       </div>
                     </div>
 
@@ -1449,37 +1706,34 @@ export default function OwnerPortal({
                       </div>
                       <p className="text-xs text-gray-500 mb-4 font-medium">Disponibilidad por debajo del límite de seguridad</p>
                       
-                      <div className="space-y-3">
-                        {/* Carne de Res Alert */}
-                        {carneResProduct && (
-                        <div 
-                          onClick={() => openStockModal(carneResProduct)}
-                          className="flex items-center justify-between p-3 rounded-xl bg-[#ffdad6]/40 hover:bg-[#ffdad6]/60 transition-colors border border-[#ffdad6] cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="w-2 h-2 rounded-full bg-red-600 animate-ping" />
-                            <span className="text-sm font-bold text-[#ba1a1a]">Carne de Res</span>
-                          </div>
-                          <span className="text-xs font-extrabold text-red-700 bg-white/60 px-2.5 py-1 rounded-lg">
-                            {carneResProduct.quantity} kg / mín {carneResProduct.minStock}kg
-                          </span>
-                        </div>
-                        )}
-
-                        {/* Pan Brioche Alert */}
-                        {panBriocheProduct && (
-                        <div 
-                          onClick={() => openStockModal(panBriocheProduct)}
-                          className="flex items-center justify-between p-3 rounded-xl bg-orange-50 hover:bg-orange-100 transition-colors border border-orange-100 cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3">
-                            <span className="w-2 h-2 rounded-full bg-orange-500" />
-                            <span className="text-sm font-bold text-orange-700">Pan de Brioche</span>
-                          </div>
-                          <span className="text-xs font-extrabold text-orange-800 bg-white/60 px-2.5 py-1 rounded-lg">
-                            {panBriocheProduct.quantity} pzas / mín {panBriocheProduct.minStock}pzas
-                          </span>
-                        </div>
+                      <div className="space-y-3 max-h-48 overflow-y-auto">
+                        {lowStockProducts.length === 0 ? (
+                          <p className="text-xs text-gray-400 font-medium py-2">Sin alertas activas. Todo el inventario está por encima del mínimo.</p>
+                        ) : (
+                          lowStockProducts.map(product => {
+                            const isCritical = product.quantity <= 0;
+                            return (
+                              <div
+                                key={product.id}
+                                onClick={() => openStockModal(product)}
+                                className={`flex items-center justify-between p-3 rounded-xl transition-colors border cursor-pointer ${
+                                  isCritical
+                                    ? 'bg-[#ffdad6]/40 hover:bg-[#ffdad6]/60 border-[#ffdad6]'
+                                    : 'bg-orange-50 hover:bg-orange-100 border-orange-100'
+                                }`}
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className={`w-2 h-2 rounded-full shrink-0 ${isCritical ? 'bg-red-600 animate-ping' : 'bg-orange-500'}`} />
+                                  <span className={`text-sm font-bold truncate ${isCritical ? 'text-[#ba1a1a]' : 'text-orange-700'}`}>
+                                    {product.name}
+                                  </span>
+                                </div>
+                                <span className={`text-xs font-extrabold bg-white/60 px-2.5 py-1 rounded-lg shrink-0 ml-2 ${isCritical ? 'text-red-700' : 'text-orange-800'}`}>
+                                  {product.quantity} u / mín {product.minStock}
+                                </span>
+                              </div>
+                            );
+                          })
                         )}
                       </div>
                     </div>
@@ -1491,7 +1745,10 @@ export default function OwnerPortal({
                     
                     {/* Inventario Header Controls */}
                     <div className="flex items-center justify-between bg-white px-6 py-4 rounded-xl border border-[#c4c6d1] shadow-sm">
-                      <h3 className="font-extrabold text-[#002A5C] text-lg">Inventario Actual</h3>
+                      <h3 className="font-extrabold text-[#002A5C] text-lg">
+                        Inventario Actual
+                        <span className="ml-2 text-sm font-bold text-gray-400">({products.length})</span>
+                      </h3>
                       <div className="flex items-center gap-3">
                         <button 
                           onClick={() => setActiveTab('inventario')}
@@ -1512,257 +1769,153 @@ export default function OwnerPortal({
 
                     {/* Cards Grid */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
-                      
-                      {/* Product 1: Carne de Res (Dynamic State) */}
-                      {carneResProduct && (
-                      <div 
-                        onClick={() => openStockModal(carneResProduct)}
-                        className="bg-white border border-[#c4c6d1] hover:border-[#ba1a1a]/40 hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group relative"
-                      >
-                        <div className="relative h-40 bg-slate-100 overflow-hidden">
-                          <img 
-                            src={carneResProduct.image || 'https://images.unsplash.com/photo-1544025162-d76694265947?w=300&auto=format&fit=crop&q=60'} 
-                            alt={carneResProduct.name} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className="absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider bg-[#ffdad6] text-[#ba1a1a] px-2.5 py-1 rounded-lg border border-[#ba1a1a]/10 shadow-sm">
-                            {carneResProduct.quantity <= 2.5 ? 'AGOTADO' : carneResProduct.quantity <= carneResProduct.minStock ? 'BAJO STOCK' : 'EN STOCK'}
-                          </span>
+                      {products.length === 0 ? (
+                        <div className="col-span-full bg-white border border-dashed border-[#c4c6d1] rounded-2xl p-12 text-center">
+                          <Package className="mx-auto text-gray-300 mb-3" size={40} />
+                          <p className="text-gray-500 font-semibold">No hay artículos en el inventario</p>
+                          <p className="text-xs text-gray-400 mt-1 mb-4">Agrega tu primer producto para verlo aquí con imagen y detalles.</p>
                           <button
                             type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteProduct(carneResProduct.id, carneResProduct.name);
-                            }}
-                            className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
-                            title="Eliminar"
+                            onClick={() => openAddModal()}
+                            className="bg-[#00B8D9] text-white hover:bg-[#009cad] py-2.5 px-5 rounded-xl font-bold text-sm transition-all inline-flex items-center gap-2"
                           >
-                            <Trash2 size={12} />
+                            <PlusCircle size={16} />
+                            Añadir Artículo
                           </button>
                         </div>
-                        <div className="p-4 space-y-3">
-                          <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{carneResProduct.name}</h4>
-                          <div className="text-xs space-y-1 text-gray-500">
-                            <p className="flex justify-between">
-                              <span>Cantidad actual:</span> 
-                              <strong className="text-slate-800">{carneResProduct.quantity} kg</strong>
-                            </p>
-                            <p className="flex justify-between border-t border-slate-50 pt-1">
-                              <span>Stock mínimo:</span> 
-                              <strong className="text-slate-600">{carneResProduct.minStock} kg</strong>
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      )}
+                      ) : (
+                        products.map(product => {
+                          const stockStatus = getDashboardStockStatus(product);
+                          const availabilityPercentage = product.minStock > 0
+                            ? Math.min(100, Math.round((product.quantity / product.minStock) * 100))
+                            : 100;
 
-                      {/* Product 2: Pan Brioche (Dynamic State) */}
-                      {panBriocheProduct && (
-                      <div 
-                        onClick={() => openStockModal(panBriocheProduct)}
-                        className="bg-white border border-[#c4c6d1] hover:border-orange-200 hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group relative"
-                      >
-                        <div className="relative h-40 bg-slate-100 overflow-hidden">
-                          <img 
-                            src={panBriocheProduct.image || 'https://images.unsplash.com/photo-1509440159596-0249088772ff?w=300&auto=format&fit=crop&q=60'} 
-                            alt={panBriocheProduct.name} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className="absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider bg-orange-50 text-orange-700 px-2.5 py-1 rounded-lg border border-orange-200 shadow-sm">
-                            {panBriocheProduct.quantity <= panBriocheProduct.minStock ? 'BAJO STOCK' : 'EN STOCK'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteProduct(panBriocheProduct.id, panBriocheProduct.name);
-                            }}
-                            className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
-                            title="Eliminar"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                        <div className="p-4 space-y-3">
-                          <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{panBriocheProduct.name}</h4>
-                          <div className="text-xs space-y-1 text-gray-500">
-                            <p className="flex justify-between">
-                              <span>Cantidad actual:</span> 
-                              <strong className="text-slate-800">{panBriocheProduct.quantity} pzas</strong>
-                            </p>
-                            <p className="flex justify-between border-t border-slate-50 pt-1">
-                              <span>Stock mínimo:</span> 
-                              <strong className="text-slate-600">{panBriocheProduct.minStock} pzas</strong>
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      )}
-
-                      {/* Product 3: Papa Russet (Dynamic State) */}
-                      {papaRussetProduct && (
-                      <div 
-                        onClick={() => openStockModal(papaRussetProduct)}
-                        className="bg-white border border-[#c4c6d1] hover:border-emerald-200 hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group relative"
-                      >
-                        <div className="relative h-40 bg-slate-100 overflow-hidden">
-                          <img 
-                            src={papaRussetProduct.image || 'https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=300&auto=format&fit=crop&q=60'} 
-                            alt={papaRussetProduct.name} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className="absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider bg-[#d1f2e5] text-[#0f5132] px-2.5 py-1 rounded-lg border border-[#00a86a]/10 shadow-sm">
-                            {papaRussetProduct.quantity <= papaRussetProduct.minStock ? 'BAJO STOCK' : 'EN STOCK'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteProduct(papaRussetProduct.id, papaRussetProduct.name);
-                            }}
-                            className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
-                            title="Eliminar"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                        <div className="p-4 space-y-3">
-                          <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{papaRussetProduct.name}</h4>
-                          <div className="text-xs space-y-1 text-gray-500">
-                            <p className="flex justify-between">
-                              <span>Cantidad actual:</span> 
-                              <strong className="text-slate-800">{papaRussetProduct.quantity} kg</strong>
-                            </p>
-                            <p className="flex justify-between border-t border-slate-50 pt-1">
-                              <span>Stock mínimo:</span> 
-                              <strong className="text-slate-600">{papaRussetProduct.minStock} kg</strong>
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      )}
-
-                      {/* Product 4: Hamburguesa Clásica (Composite Product Recipe) */}
-                      {hamburguesaProduct && (
-                      <div 
-                        className="bg-white border border-[#c4c6d1] hover:border-blue-200 hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 group flex flex-col justify-between relative"
-                      >
-                        <div>
-                          <div className="relative h-40 bg-slate-100 overflow-hidden">
-                            <img 
-                              src={hamburguesaProduct.image || 'https://images.unsplash.com/photo-1568901346375-23c9450c58cd?w=300&auto=format&fit=crop&q=60'} 
-                              alt={hamburguesaProduct.name} 
-                              className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                              referrerPolicy="no-referrer"
-                            />
-                            <span className="absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider bg-blue-50 text-blue-600 px-2.5 py-1 rounded-lg border border-blue-200 shadow-sm">
-                              COMPUESTO
-                            </span>
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteProduct(hamburguesaProduct.id, hamburguesaProduct.name);
+                          return (
+                            <div
+                              key={product.id}
+                              onClick={() => {
+                                if (product.isCompound) {
+                                  openCompoundSaleFromDashboard(product);
+                                } else {
+                                  openStockModal(product);
+                                }
                               }}
-                              className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
-                              title="Eliminar"
+                              className={`bg-white border border-[#c4c6d1] hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 group relative flex flex-col cursor-pointer ${
+                                product.isCompound ? 'hover:border-blue-200' : 'hover:border-[#00B8D9]/40'
+                              }`}
                             >
-                              <Trash2 size={12} />
-                            </button>
-                          </div>
-                          
-                          <div className="p-4 space-y-3">
-                            <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{hamburguesaProduct.name}</h4>
-                            
-                            {/* Dynamic Percentage Safety Progress Bar based on inputs */}
-                            <div className="space-y-1">
-                              <div className="flex justify-between items-center text-xs">
-                                <span className="text-gray-500">Disponibilidad de Receta:</span>
-                                <strong className={`${burgerSafetyPercentage < 25 ? 'text-red-600' : 'text-blue-600'} font-bold`}>
-                                  {burgerSafetyPercentage}%
-                                </strong>
-                              </div>
-                              <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
-                                <div 
-                                  className={`h-full transition-all duration-300 ${
-                                    burgerSafetyPercentage < 25 ? 'bg-red-500' : 'bg-blue-500'
-                                  }`}
-                                  style={{ width: `${burgerSafetyPercentage}%` }}
+                              <div className="relative h-40 bg-slate-100 overflow-hidden">
+                                <img
+                                  src={getDashboardProductImage(product)}
+                                  alt={product.name}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+                                  referrerPolicy="no-referrer"
                                 />
+                                <span className={`absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-lg border shadow-sm ${stockStatus.badgeClass}`}>
+                                  {stockStatus.label}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleDeleteProduct(product.id, product.name);
+                                  }}
+                                  className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
+                                  title="Eliminar"
+                                >
+                                  <Trash2 size={12} />
+                                </button>
                               </div>
+
+                              <div className="p-4 space-y-3 flex-1">
+                                <div>
+                                  <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{product.name}</h4>
+                                  <p className="text-[10px] text-gray-400 font-mono tracking-wider mt-0.5">{product.code}</p>
+                                </div>
+
+                                <div className="text-xs space-y-1 text-gray-500">
+                                  <p className="flex justify-between">
+                                    <span>Categoría:</span>
+                                    <strong className="text-slate-700">{product.category}</strong>
+                                  </p>
+                                  <p className="flex justify-between">
+                                    <span>Precio venta:</span>
+                                    <strong className="text-slate-800">{config.currencySymbol}{product.sellPrice.toFixed(2)}</strong>
+                                  </p>
+                                  <p className="flex justify-between">
+                                    <span>{product.isCompound ? 'Disponible para venta:' : 'Cantidad actual:'}</span>
+                                    <strong className="text-slate-800">
+                                      {product.isCompound
+                                        ? `${getMaxCompoundSaleQuantity(product, products)} u`
+                                        : `${product.quantity} u`}
+                                    </strong>
+                                  </p>
+                                  <p className="flex justify-between border-t border-slate-50 pt-1">
+                                    <span>Stock mínimo:</span>
+                                    <strong className="text-slate-600">{product.minStock} u</strong>
+                                  </p>
+                                  {product.location && (
+                                    <p className="flex justify-between border-t border-slate-50 pt-1">
+                                      <span>Ubicación:</span>
+                                      <strong className="text-slate-600 text-right max-w-[55%] truncate">{product.location}</strong>
+                                    </p>
+                                  )}
+                                </div>
+
+                                {product.isCompound && (
+                                  <div className="space-y-1 pt-1">
+                                    <div className="flex justify-between items-center text-xs">
+                                      <span className="text-gray-500">Disponibilidad:</span>
+                                      <strong className={`${availabilityPercentage < 100 ? 'text-orange-600' : 'text-blue-600'} font-bold`}>
+                                        {availabilityPercentage}%
+                                      </strong>
+                                    </div>
+                                    <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full transition-all duration-300 ${availabilityPercentage < 100 ? 'bg-orange-500' : 'bg-blue-500'}`}
+                                        style={{ width: `${availabilityPercentage}%` }}
+                                      />
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+
+                              {product.isCompound && (
+                                <div className="p-4 pt-0 border-t border-slate-50 flex items-center justify-end gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      openCompoundForm(product);
+                                    }}
+                                    className="bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs py-1.5 px-3 rounded-lg font-bold transition-colors"
+                                  >
+                                    Receta
+                                  </button>
+                                </div>
+                              )}
                             </div>
-
-                            <p className="text-[11px] text-gray-500 leading-tight">
-                              Limitado por: <strong className="text-red-600 font-semibold">Carne de de Res ({carneRes.quantity}kg)</strong>
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="p-4 pt-0 border-t border-slate-50 mt-2 flex items-center justify-between gap-2">
-                          <span className="text-xs font-semibold text-gray-400">Ventas Est: <strong className="text-slate-800">{Math.max(0, Math.floor(carneRes.quantity / 0.2))} pzs</strong></span>
-                          <button 
-                            type="button"
-                            onClick={() => setShowRecipeForm(true)}
-                            className="bg-blue-50 text-blue-600 hover:bg-blue-100 text-xs py-1.5 px-3 rounded-lg font-bold transition-colors"
-                          >
-                            Receta
-                          </button>
-                        </div>
-                      </div>
+                          );
+                        })
                       )}
-
-                      {/* Product 5: Tomate Saladet (Dynamic State) */}
-                      {tomateSaladetProduct && (
-                      <div 
-                        onClick={() => openStockModal(tomateSaladetProduct)}
-                        className="bg-white border border-[#c4c6d1] hover:border-emerald-200 hover:-translate-y-1 rounded-2xl overflow-hidden shadow-sm hover:shadow-md transition-all duration-300 cursor-pointer group relative"
-                      >
-                        <div className="relative h-40 bg-slate-100 overflow-hidden">
-                          <img 
-                            src={tomateSaladetProduct.image || 'https://images.unsplash.com/photo-1595855759920-86582396756a?w=300&auto=format&fit=crop&q=60'} 
-                            alt={tomateSaladetProduct.name} 
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                            referrerPolicy="no-referrer"
-                          />
-                          <span className="absolute top-3 right-3 text-[10px] font-extrabold uppercase tracking-wider bg-[#d1f2e5] text-[#0f5132] px-2.5 py-1 rounded-lg border border-[#00a86a]/10 shadow-sm">
-                            {tomateSaladetProduct.quantity <= tomateSaladetProduct.minStock ? 'BAJO STOCK' : 'EN STOCK'}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteProduct(tomateSaladetProduct.id, tomateSaladetProduct.name);
-                            }}
-                            className="absolute top-3 left-3 bg-[#ffdad6] hover:bg-red-600 hover:text-white text-red-700 p-2 rounded-lg border border-[#ba1a1a]/10 shadow-sm transition-all z-20"
-                            title="Eliminar"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                        <div className="p-4 space-y-3">
-                          <h4 className="font-bold text-[#002A5C] text-base group-hover:text-[#00B8D9] transition-colors">{tomateSaladetProduct.name}</h4>
-                          <div className="text-xs space-y-1 text-gray-500">
-                            <p className="flex justify-between">
-                              <span>Cantidad actual:</span> 
-                              <strong className="text-slate-800">{tomateSaladetProduct.quantity} kg</strong>
-                            </p>
-                            <p className="flex justify-between border-t border-slate-50 pt-1">
-                              <span>Stock mínimo:</span> 
-                              <strong className="text-slate-600">{tomateSaladetProduct.minStock} kg</strong>
-                            </p>
-                          </div>
-                        </div>
-                      </div>
-                      )}
-
                     </div>
 
                   </div>
 
                 </div>
+
+                <DailySalesPanel
+                  ref={dailySalesRef}
+                  products={products}
+                  sales={sales}
+                  transactions={transactions}
+                  config={config}
+                  industry="restaurante"
+                  panelId="restaurant-daily-sales"
+                  onUpdateProducts={onUpdateProducts}
+                  onUpdateSales={onUpdateSales}
+                  onUpdateTransactions={onUpdateTransactions}
+                />
 
                 {/* Recipe Modal Overlay */}
                 <AnimatePresence>
@@ -1811,7 +1964,7 @@ export default function OwnerPortal({
                           </div>
 
                           <div className="text-xs text-emerald-700 font-bold bg-emerald-50 border border-emerald-100 p-3 rounded-lg flex items-center gap-2">
-                            <span>💡 Disponibilidad actual: {Math.max(0, Math.floor(carneRes.quantity / 0.2))} platillos elaborables basado en carne disponible.</span>
+                            <span>💡 La disponibilidad del platillo compuesto depende del stock actual de sus ingredientes en inventario.</span>
                           </div>
                         </div>
 
@@ -2207,45 +2360,69 @@ export default function OwnerPortal({
               {/* Form Section */}
               <div className="w-full max-w-2xl mx-auto">
                 <div className="bg-white p-6 md:p-8 rounded-2xl border border-[#c4c6d1] shadow-sm space-y-8">
+                  {/* Company Info Section */}
+                  <div className="space-y-6">
+                    <h3 className="text-base font-bold text-[#081b38] border-b border-[#c4c6d1] pb-2 flex items-center gap-2">
+                      <Building2 size={18} className="text-[#00B8D9]" /> Datos de la Empresa
+                    </h3>
+                    <div className="flex flex-col gap-2">
+                      <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Nombre de la Empresa</label>
+                      <input
+                        className="w-full bg-white border border-[#CBD5E0] px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9] text-sm text-[#081b38] font-semibold"
+                        type="text"
+                        value={companyName}
+                        onChange={(e) => setCompanyName(e.target.value)}
+                        placeholder="Nombre registrado en el alta del negocio"
+                      />
+                      <p className="text-[10px] text-gray-400">Este nombre se muestra en la barra lateral y en el dashboard.</p>
+                    </div>
+                  </div>
+
                   {/* Personal Info Section */}
                   <div className="space-y-6">
                     <h3 className="text-base font-bold text-[#081b38] border-b border-[#c4c6d1] pb-2 flex items-center gap-2">
                       <User size={18} className="text-[#00B8D9]" /> Información Personal
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {/* Name Field */}
                       <div className="flex flex-col gap-2">
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Nombre Completo</label>
-                        <input 
-                          className="w-full bg-white border border-[#CBD5E0] px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9] text-sm text-[#081b38] font-semibold" 
-                          type="text" 
+                        <input
+                          className="w-full bg-white border border-[#CBD5E0] px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9] text-sm text-[#081b38] font-semibold"
+                          type="text"
                           value={profileName}
                           onChange={(e) => setProfileName(e.target.value)}
                         />
                       </div>
-                      
-                      {/* Phone Field with Country Code */}
+
                       <div className="flex flex-col gap-2">
+                        <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Correo Electrónico</label>
+                        <input
+                          className="w-full bg-[#F8FAFC] border border-[#CBD5E0] px-4 py-3 rounded-lg text-sm text-[#081b38] font-semibold"
+                          type="email"
+                          value={profileEmail}
+                          readOnly
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-2 md:col-span-2">
                         <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Teléfono</label>
-                        <div className="flex gap-0">
-                          <div className="relative">
-                            <select 
-                              className="h-full bg-[#F8FAFC] border border-[#CBD5E0] border-r-0 rounded-l-lg px-3 text-sm text-[#081b38] font-semibold appearance-none cursor-pointer pr-8 focus:outline-none" 
-                              value={profileCountryCode}
-                              onChange={(e) => setProfileCountryCode(e.target.value)}
-                            >
-                              <option value="MX">🇲🇽 +52</option>
-                              <option value="ES">🇪🇸 +34</option>
-                              <option value="CO">🇨🇴 +57</option>
-                              <option value="US">🇺🇸 +1</option>
-                            </select>
-                            <span className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500 text-xs">▼</span>
-                          </div>
-                          <input 
-                            className="flex-grow bg-white border border-[#CBD5E0] px-4 py-3 rounded-r-lg focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9] text-sm text-[#081b38] font-semibold" 
-                            type="tel" 
+                        <div className="flex gap-2">
+                          <select
+                            className="w-[42%] min-w-[8.5rem] bg-[#F8FAFC] border border-[#CBD5E0] px-2 py-3 rounded-lg text-xs text-[#081b38] font-semibold focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9]"
+                            value={profileCountryCode}
+                            onChange={(e) => setProfileCountryCode(e.target.value)}
+                          >
+                            {COUNTRY_PHONE_CODES.map(({ code, label }) => (
+                              <option key={code} value={code}>
+                                {label}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            className="flex-1 bg-white border border-[#CBD5E0] px-4 py-3 rounded-lg focus:outline-none focus:ring-2 focus:ring-[#00B8D9]/20 focus:border-[#00B8D9] text-sm text-[#081b38] font-semibold"
+                            type="tel"
                             value={profilePhone}
-                            onChange={(e) => setProfilePhone(e.target.value)}
+                            onChange={(e) => setProfilePhone(e.target.value.replace(/[^\d\s-]/g, ''))}
                           />
                         </div>
                       </div>
@@ -2267,8 +2444,9 @@ export default function OwnerPortal({
                           <p className="text-xs text-gray-500">Último cambio hace 3 meses</p>
                         </div>
                       </div>
-                      <button 
-                        onClick={() => setShowPasswordModal(true)}
+                      <button
+                        type="button"
+                        onClick={openPinChangeModal}
                         className="w-full md:w-auto px-6 py-2.5 border border-[#00B8D9] text-[#00B8D9] rounded-lg text-xs font-bold hover:bg-[#00B8D9]/5 transition-colors cursor-pointer active:scale-95 flex items-center justify-center gap-2"
                       >
                         Cambiar PIN de Acceso
@@ -2305,15 +2483,6 @@ export default function OwnerPortal({
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div>
-                        <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nombre de la Tienda / Sucursal</label>
-                        <input
-                          type="text"
-                          value={config.storeName}
-                          onChange={(e) => onUpdateConfig({ ...config, storeName: e.target.value })}
-                          className="w-full text-xs font-semibold p-2.5 border rounded-lg focus:ring-1 focus:ring-[#00687b] bg-[#f9f9ff] text-[#081b38] border-[#c4c6d1]"
-                        />
-                      </div>
-                      <div>
                         <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Moneda / Divisa</label>
                         <input
                           type="text"
@@ -2345,36 +2514,25 @@ export default function OwnerPortal({
                     <div className="mt-4 pt-4 border-t border-gray-100 flex flex-col sm:flex-row justify-between items-center gap-4">
                       <div className="text-left w-full sm:w-auto">
                         <strong className="block text-xs font-bold text-red-600 uppercase">Herramientas Críticas</strong>
-                        <span className="text-[10px] text-gray-400 block mt-0.5">Retorna el catálogo, transacciones e historial a valores de fábrica</span>
+                        <span className="text-[10px] text-gray-400 block mt-0.5">
+                          Vacía el catálogo de productos y los movimientos de stock. No afecta ventas ni configuraciones.
+                        </span>
                       </div>
                       <button
-                        onClick={() => {
-                          if (confirm('¿Desea restaurar de fábrica el catálogo, ventas y configuraciones? Se perderán todas tus adiciones de sesión.')) {
-                            localStorage.clear();
-                            window.location.reload();
-                          }
-                        }}
+                        type="button"
+                        onClick={handleClearInventory}
                         className="bg-red-50 hover:bg-red-100 text-red-600 text-xs font-bold px-4 py-2 rounded-xl border border-red-200 transition flex items-center gap-1.5 self-start sm:self-center"
                       >
-                        <RotateCcw size={14} /> Restaurar de Fábrica
+                        <RotateCcw size={14} /> Borrar todo el inventario
                       </button>
                     </div>
                   </div>
 
                   {/* Save Profile Actions */}
                   <div className="pt-6 border-t border-gray-100 flex flex-col md:flex-row gap-4">
-                    <button 
-                      onClick={() => {
-                        setIsSavingProfile(true);
-                        setTimeout(() => {
-                          setIsSavingProfile(false);
-                          setSaveSuccess(true);
-                          onUpdateConfig({ ...config, phone: profilePhone });
-                          setTimeout(() => {
-                            setSaveSuccess(false);
-                          }, 2500);
-                        }, 1000);
-                      }}
+                    <button
+                      type="button"
+                      onClick={handleSaveProfile}
                       className="flex-grow order-2 md:order-1 px-8 py-3.5 bg-[#00B8D9] text-white rounded-xl font-bold hover:brightness-110 shadow-md transition-all flex items-center justify-center gap-2 active:scale-95"
                     >
                       {isSavingProfile ? (
@@ -2394,13 +2552,11 @@ export default function OwnerPortal({
                         </>
                       )}
                     </button>
-                    <button 
+                    <button
+                      type="button"
                       onClick={() => {
-                        setProfileName('Alejandro Ramírez');
-                        setProfilePhone('55 1234 5678');
-                        setProfileCountryCode('MX');
+                        hydrateProfileFromSources();
                         setEmailNotifications(true);
-                        setActiveTab('dashboard');
                       }}
                       className="order-1 md:order-2 px-8 py-3.5 text-gray-500 hover:text-gray-700 font-bold hover:bg-gray-100 transition-colors rounded-xl active:opacity-80"
                     >
@@ -2622,26 +2778,7 @@ export default function OwnerPortal({
                 <div className="my-8 flex justify-center">
                   <div className="bg-white p-6 border-2 border-dashed border-[#002A5C] rounded-3xl shadow-md relative">
                     <div className="w-56 h-56 bg-slate-50 border border-gray-100 rounded-2xl flex items-center justify-center p-4">
-                      <svg width="180" height="180" viewBox="0 0 200 200" className="text-[#002a5c]">
-                        <rect width="200" height="200" fill="white" />
-                        <g fill="currentColor">
-                          <rect x="10" y="10" width="50" height="50" />
-                          <rect x="20" y="20" width="30" height="30" fill="white" />
-                          <rect x="25" y="25" width="20" height="20" />
-                          
-                          <rect x="140" y="10" width="50" height="50" />
-                          <rect x="150" y="20" width="30" height="30" fill="white" />
-                          <rect x="155" y="25" width="20" height="20" />
-                          
-                          <rect x="10" y="140" width="50" height="50" />
-                          <rect x="20" y="150" width="30" height="30" fill="white" />
-                          <rect x="25" y="155" width="20" height="20" />
-
-                          <rect x="90" y="90" width="20" height="20" fill="#00B8D9" />
-
-                          <path d="M 70,10 H 90 V 30 H 70 Z M 100,10 H 120 V 20 H 100 Z M 70,40 H 80 V 60 H 70 Z M 90,50 H 120 V 70 H 90 Z M 130,50 H 140 V 60 H 130 Z M 10,70 H 30 V 90 H 10 Z M 40,80 H 60 V 100 H 40 Z M 70,80 H 80 V 110 H 70 Z M 90,80 H 100 V 90 H 90 Z M 120,80 H 140 V 100 H 120 Z M 150,70 H 190 V 80 H 150 Z M 160,90 H 180 V 110 H 160 Z M 10,110 H 40 V 120 H 10 Z M 50,110 H 70 V 130 H 50 Z M 80,120 H 110 V 140 H 80 Z M 120,110 H 130 V 130 H 120 Z M 140,120 H 190 V 130 H 140 Z M 70,150 H 90 V 170 H 70 Z M 100,150 H 130 V 160 H 100 Z M 110,170 H 140 V 190 H 110 Z M 150,150 H 160 V 180 H 150 Z M 170,160 H 190 V 190 H 170 Z" />
-                        </g>
-                      </svg>
+                      <OwnerInviteQrCode inviteCode={ownerInviteCode} size={180} />
                     </div>
                     <span className="absolute -bottom-3 left-1/2 transform -translate-x-1/2 bg-[#00B8D9] text-[#002A5C] text-[9px] font-black px-3 py-1 rounded-full uppercase shadow">
                       VINCULADOR SEGURO
@@ -2649,12 +2786,18 @@ export default function OwnerPortal({
                   </div>
                 </div>
 
+                {ownerInviteCode && (
+                  <p className="text-[10px] text-gray-400 font-mono mb-4">
+                    Código: {ownerInviteCode}
+                  </p>
+                )}
+
                 <div className="bg-[#f9f9ff] text-left p-4 rounded-xl border space-y-2 max-w-md mx-auto">
                   <p className="text-xs font-bold text-[#081b38] uppercase">Vinculación de Cajas Rápidas:</p>
                   <ol className="text-xs text-gray-500 list-decimal pl-4 space-y-1">
                     <li>Abre Venpro en la tablet o teléfono de caja de tu colaborador.</li>
-                    <li>Selecciona "Sincronizar por QR" en la pantalla inicial de ingreso.</li>
-                    <li>Apunta la cámara a este código para validar y conectar de manera cifrada.</li>
+                    <li>Selecciona &quot;Soy un empleado&quot; y completa tu registro.</li>
+                    <li>Escanea este código QR para vincular tu cuenta al negocio.</li>
                   </ol>
                 </div>
               </div>
@@ -2760,7 +2903,7 @@ export default function OwnerPortal({
                 <div 
                   onClick={() => {
                     setShowProductTypeSelectionModal(false);
-                    openAddModal();
+                    openSimpleProductForm();
                   }}
                   className="bg-white p-5 border border-slate-200 rounded-2xl hover:border-[#002a5c] hover:shadow-lg transition-all duration-300 flex flex-col justify-between group cursor-pointer text-left"
                 >
@@ -2786,7 +2929,7 @@ export default function OwnerPortal({
                 <div 
                   onClick={() => {
                     setShowProductTypeSelectionModal(false);
-                    setShowRecipeForm(true);
+                    openCompoundForm();
                   }}
                   className="bg-white p-5 border border-slate-200 rounded-2xl hover:border-[#00B8D9] hover:shadow-lg transition-all duration-300 flex flex-col justify-between group cursor-pointer text-left"
                 >
@@ -3082,7 +3225,62 @@ export default function OwnerPortal({
         )}
       </AnimatePresence>
 
-      {/* MODAL 3: Cambiar PIN de Acceso Dueño */}
+      {/* MODAL 3: Confirmar borrado de inventario */}
+      <AnimatePresence>
+        {showClearInventoryModal && (
+          <div
+            className="fixed inset-0 bg-black/65 z-[60] flex items-center justify-center p-4"
+            onClick={() => setShowClearInventoryModal(false)}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className="bg-white rounded-2xl w-full max-w-md p-6 shadow-2xl border border-[#c4c6d1]"
+              role="alertdialog"
+              onClick={(e) => e.stopPropagation()}
+              aria-labelledby="clear-inventory-title"
+              aria-describedby="clear-inventory-desc"
+            >
+              <div className="flex items-start gap-4">
+                <div className="flex items-center justify-center w-12 h-12 rounded-full bg-red-50 text-red-600 shrink-0">
+                  <AlertTriangle size={24} />
+                </div>
+                <div className="min-w-0">
+                  <h3 id="clear-inventory-title" className="text-base font-bold text-[#081b38]">
+                    ¿Estás segura de borrar todo el inventario?
+                  </h3>
+                  <p id="clear-inventory-desc" className="text-sm text-gray-500 mt-2 leading-relaxed">
+                    Se eliminarán todos los productos y movimientos de stock. Esta acción no se puede deshacer.
+                  </p>
+                  <p className="text-xs text-gray-400 mt-2">
+                    El historial de ventas, tu perfil y las configuraciones del negocio no se modificarán.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex gap-3 mt-6">
+                <button
+                  type="button"
+                  onClick={() => setShowClearInventoryModal(false)}
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-xl text-sm font-bold transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={confirmClearInventory}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white py-3 rounded-xl text-sm font-bold transition shadow-md"
+                >
+                  Sí, borrar inventario
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* MODAL 4: Cambiar PIN de Acceso Dueño */}
       <AnimatePresence>
         {showPasswordModal && (
           <div className="fixed inset-0 bg-black/65 z-50 flex items-center justify-center p-4">
@@ -3097,27 +3295,52 @@ export default function OwnerPortal({
                   <Lock size={16} className="text-[#00B8D9]" /> Cambiar PIN de Acceso
                 </h3>
               </div>
-              <form 
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  setShowPasswordModal(false);
-                  alert('Su PIN de Acceso ha sido actualizado satisfactoriamente.');
-                }}
-                className="mt-4 space-y-4"
-              >
+              <form onSubmit={handlePinChangeSubmit} className="mt-4 space-y-4">
+                {pinModalError && (
+                  <p className="text-xs font-semibold text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2">
+                    {pinModalError}
+                  </p>
+                )}
                 <div>
-                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nuevo PIN de Acceso (Administrador)</label>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Confirma tu correo</label>
+                  <input
+                    type="email"
+                    required
+                    value={pinChangeEmail}
+                    onChange={(e) => setPinChangeEmail(e.target.value)}
+                    placeholder="nombre@empresa.com"
+                    className="w-full p-2.5 border rounded-lg focus:ring-1 focus:ring-[#00B8D9] bg-[#f9f9ff] text-[#081b38] border-[#c4c6d1] text-sm"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">Escribe el correo con el que registraste tu cuenta para autorizar el cambio.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Nuevo PIN de Acceso</label>
                   <input
                     type="password"
+                    inputMode="numeric"
                     pattern="[0-9]*"
                     maxLength={6}
                     required
-                    value={config.ownerAccessPin}
-                    onChange={(e) => onUpdateConfig({ ...config, ownerAccessPin: e.target.value })}
+                    value={newPinValue}
+                    onChange={(e) => setNewPinValue(e.target.value.replace(/\D/g, ''))}
                     placeholder="PIN numérico de seguridad"
                     className="w-full text-center tracking-widest font-black text-lg p-2.5 border rounded-lg focus:ring-1 focus:ring-[#00B8D9] bg-[#f9f9ff] text-[#00687b] border-[#c4c6d1]"
                   />
-                  <p className="text-[10px] text-gray-400 mt-1">Ingrese únicamente números para su PIN de seguridad de caja de acceso exclusivo de dueño.</p>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Confirmar nuevo PIN</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    maxLength={6}
+                    required
+                    value={confirmNewPinValue}
+                    onChange={(e) => setConfirmNewPinValue(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Repite el PIN"
+                    className="w-full text-center tracking-widest font-black text-lg p-2.5 border rounded-lg focus:ring-1 focus:ring-[#00B8D9] bg-[#f9f9ff] text-[#00687b] border-[#c4c6d1]"
+                  />
+                  <p className="text-[10px] text-gray-400 mt-1">Entre 4 y 6 dígitos. Se enviará confirmación a tu correo.</p>
                 </div>
 
                 <div className="flex gap-2 pt-2">
@@ -3141,6 +3364,7 @@ export default function OwnerPortal({
         )}
       </AnimatePresence>
 
+      </div>
     </div>
   );
 }
