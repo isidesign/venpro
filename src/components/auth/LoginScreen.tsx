@@ -12,7 +12,7 @@ import {
   fetchUserProfile,
 } from '@/services/authService';
 import { createOrganizationWithDatabase, loadOrganizationData, validateInviteCode } from '@/services/organizationService';
-import { parseInviteCodeFromQr } from '@/lib/inviteQr';
+import { parseInviteCodeFromQr, ensureLocalInviteCode } from '@/lib/inviteQr';
 import {
   sendVerificationCode,
   verifyVerificationCode,
@@ -46,6 +46,7 @@ interface LoginScreenProps {
     transactions: StockTransaction[];
     config: StoreConfig;
     industry: IndustryType;
+    inviteCode?: string;
   }) => void;
 }
 
@@ -114,14 +115,12 @@ export default function LoginScreen({
             transactions: orgData.transactions,
             config: orgData.config,
             industry: orgData.industry,
+            inviteCode: orgData.inviteCode,
           });
         }
       }
     } else {
-      const ownerInviteCode = localStorage.getItem('venpro_invite_code');
-      if (!ownerInviteCode || ownerInviteCode.toLowerCase() !== inviteCode.toLowerCase()) {
-        throw new AuthError('El código QR no coincide con el negocio del propietario.');
-      }
+      localStorage.setItem('venpro_invite_code', inviteCode.toLowerCase());
 
       const currentEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
       currentEmployees.push({
@@ -153,7 +152,11 @@ export default function LoginScreen({
       const organizationId = await validateInviteCode(inviteCode);
       if (!organizationId) {
         employeeScanProcessingRef.current = false;
-        setEmployeeScannerError('Este QR no pertenece a un negocio Venpro activo. Pide al propietario que lo genere de nuevo.');
+        setEmployeeScannerError(
+          isSupabaseConfigured
+            ? 'Este QR no pertenece a un negocio Venpro activo. Pide al propietario que lo genere de nuevo en Enlace QR.'
+            : 'No se pudo validar el código QR. Escanea el QR actual del panel del propietario.',
+        );
         return;
       }
 
@@ -695,12 +698,14 @@ export default function LoginScreen({
           transactions: orgData.transactions,
           config: orgData.config,
           industry: orgData.industry,
+          inviteCode: orgData.inviteCode,
         });
 
         localStorage.setItem('venpro_invite_code', orgData.inviteCode);
         await refreshProfile();
       } else {
         const seedData = getIndustrySeedData(industry);
+        const inviteCode = ensureLocalInviteCode();
         localStorage.setItem('venpro_business_structure', businessStructure);
 
         onOrganizationBootstrap?.({
@@ -709,6 +714,7 @@ export default function LoginScreen({
           transactions: seedData.transactions,
           config: finalConfig,
           industry,
+          inviteCode,
         });
       }
 
@@ -1023,6 +1029,13 @@ export default function LoginScreen({
             <p className="text-sm text-gray-500 leading-relaxed px-2">
               Pide al propietario que abra <strong>Enlace QR</strong> en su panel y muestra ese código a la cámara.
             </p>
+            {!isSupabaseConfigured && (
+              <p className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 mt-2 leading-relaxed">
+                Si escaneas desde otro dispositivo (por ejemplo, tu teléfono), usa la misma URL de red
+                del propietario (ej. <span className="font-mono">192.168.x.x:3001</span>). Para sincronizar
+                inventario entre equipos, configura Supabase.
+              </p>
+            )}
             {employeeScannerError && (
               <p className="text-sm text-red-600 font-semibold bg-red-50 border border-red-100 rounded-lg px-4 py-2 mt-2">
                 {employeeScannerError}

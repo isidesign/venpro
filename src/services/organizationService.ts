@@ -2,6 +2,7 @@ import { supabase } from '@/lib/supabase';
 import { getIndustrySeedData } from '@/data/industrySeeds';
 import type { IndustryType, Product, Sale, StockTransaction, StoreConfig } from '@/types';
 import { parseIndustry } from '@/lib/industry';
+import { ensureLocalInviteCode, generateInviteCode, isValidInviteCodeFormat } from '@/lib/inviteQr';
 import { AuthError } from '@/services/authService';
 
 export interface CreateOrganizationParams {
@@ -33,16 +34,21 @@ function requireSupabase() {
 
 export async function validateInviteCode(code: string): Promise<string | null> {
   const normalized = code.trim().toLowerCase();
-  if (!normalized) return null;
+  if (!normalized || !isValidInviteCodeFormat(normalized)) return null;
 
   if (!supabase) {
-    const stored = localStorage.getItem('venpro_invite_code');
-    return stored && stored.toLowerCase() === normalized ? 'local' : null;
+    // Sin Supabase no hay backend compartido entre dispositivos: aceptamos el código del QR Venpro.
+    localStorage.setItem('venpro_invite_code', normalized);
+    return 'local';
   }
 
   const { data, error } = await supabase.rpc('validate_invite_code', { code: normalized });
   if (error) throw new AuthError(error.message);
-  return (data as string | null) ?? null;
+
+  if (!data) return null;
+
+  localStorage.setItem('venpro_invite_code', normalized);
+  return String(data);
 }
 
 export async function createOrganizationWithDatabase(
@@ -245,4 +251,44 @@ export async function loadOrganizationData(organizationId: string): Promise<Orga
     transactions,
     config,
   };
+}
+
+export async function fetchOrganizationInviteCode(organizationId: string): Promise<string | null> {
+  if (!supabase) return ensureLocalInviteCode();
+
+  const { data, error } = await supabase
+    .from('organizations')
+    .select('invite_code')
+    .eq('id', organizationId)
+    .maybeSingle();
+
+  if (error) throw new AuthError(error.message);
+  if (!data?.invite_code) return null;
+
+  localStorage.setItem('venpro_invite_code', data.invite_code);
+  return data.invite_code;
+}
+
+export async function regenerateOrganizationInviteCode(organizationId: string): Promise<string> {
+  if (!supabase) {
+    const code = generateInviteCode();
+    localStorage.setItem('venpro_invite_code', code);
+    return code;
+  }
+
+  const client = requireSupabase();
+  const newCode = generateInviteCode();
+
+  const { data, error } = await client
+    .from('organizations')
+    .update({ invite_code: newCode })
+    .eq('id', organizationId)
+    .select('invite_code')
+    .single();
+
+  if (error) throw new AuthError(error.message);
+
+  const inviteCode = data.invite_code as string;
+  localStorage.setItem('venpro_invite_code', inviteCode);
+  return inviteCode;
 }

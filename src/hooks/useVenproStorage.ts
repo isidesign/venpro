@@ -73,6 +73,7 @@ export function useVenproStorage() {
     setTransactions(data.transactions);
     setConfig(data.config);
     setIndustry(data.industry);
+    localStorage.setItem('venpro_invite_code', data.inviteCode);
     writeLocalData(data);
   }, [loadFromLocal]);
 
@@ -122,6 +123,7 @@ export function useVenproStorage() {
     transactions: StockTransaction[];
     config: StoreConfig;
     industry?: IndustryType;
+    inviteCode?: string;
   }) => {
     const resolvedIndustry = data.industry ?? parseIndustry(localStorage.getItem(STORAGE_KEYS.industry));
     setProducts(data.products);
@@ -129,6 +131,9 @@ export function useVenproStorage() {
     setTransactions(data.transactions);
     setConfig(data.config);
     setIndustry(resolvedIndustry);
+    if (data.inviteCode) {
+      localStorage.setItem('venpro_invite_code', data.inviteCode);
+    }
     writeLocalData({
       products: data.products,
       sales: data.sales,

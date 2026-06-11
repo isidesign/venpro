@@ -21,7 +21,7 @@ import DailySalesPanel, { type DailySalesPanelHandle } from '@/components/dashbo
 import { getMaxCompoundSaleQuantity, isProductAvailableForSale } from '@/lib/compoundProduct';
 import ClothingProductFields from '@/components/products/ClothingProductFields';
 import { CLOTHING_CATEGORIES } from '@/data/clothingCatalog';
-import OwnerInviteQrCode from '@/components/owner/OwnerInviteQrCode';
+import OwnerInviteQrPanel from '@/components/owner/OwnerInviteQrPanel';
 import VenproWordmark, { VENPRO_LOGO_SRC } from '@/components/brand/VenproWordmark';
 import { getIndustryWelcomeSubtitle } from '@/lib/industry';
 import { useVenproAuth } from '@/contexts/VenproAuthContext';
@@ -61,7 +61,7 @@ export default function OwnerPortal({
   onBack,
   onLogout,
 }: OwnerPortalProps) {
-  const { profile } = useVenproAuth();
+  const { profile, organizationId, isSupabaseEnabled } = useVenproAuth();
   const [activeTab, setActiveTab] = useState<TabType>('dashboard');
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -148,13 +148,6 @@ export default function OwnerPortal({
   const [pinModalError, setPinModalError] = useState('');
   const [showQrHelpMenu, setShowQrHelpMenu] = useState(false);
   const [showClearInventoryModal, setShowClearInventoryModal] = useState(false);
-  const [ownerInviteCode, setOwnerInviteCode] = useState(
-    () => localStorage.getItem('venpro_invite_code') ?? '',
-  );
-
-  useEffect(() => {
-    setOwnerInviteCode(localStorage.getItem('venpro_invite_code') ?? '');
-  }, [profile?.organizationId]);
 
   const accountEmail = profile?.email || localStorage.getItem(STORAGE_KEYS.ownerProfileEmail) || '';
 
@@ -1289,11 +1282,14 @@ export default function OwnerPortal({
           {activeTab !== 'dashboard' && (
             <div className="flex items-center justify-between pb-2">
               <button
-                onClick={onBack}
+                onClick={() => {
+                  setSidebarOpen(false);
+                  setActiveTab('dashboard');
+                }}
                 className="flex items-center gap-2 text-sm text-[#002A5C] hover:text-[#00B8D9] font-bold transition-all group px-4 py-2 rounded-xl bg-white border border-[#c4c6d1] shadow-sm hover:shadow-md active:scale-95 duration-200"
               >
                 <ArrowLeft size={16} className="transition-transform group-hover:-translate-x-1" />
-                <span>Volver Atrás</span>
+                <span>Volver al Dashboard</span>
               </button>
               <span className="text-xs text-gray-500 font-mono hidden sm:inline-block">Tipo de Acceso: <strong>Propietario</strong></span>
             </div>
@@ -2766,41 +2762,11 @@ export default function OwnerPortal({
               exit={{ opacity: 0 }}
               className="max-w-2xl mx-auto space-y-6"
             >
-              <div className="bg-white p-6 rounded-2xl border border-[#c4c6d1] shadow-sm text-center">
-                <div className="inline-flex p-3 bg-blue-50 text-[#002A5C] rounded-2xl mb-4">
-                  <QrCode size={36} />
-                </div>
-                <h3 className="font-bold text-[#081b38] text-lg">Código QR de Enlace Terminal</h3>
-                <p className="text-xs text-gray-500 max-w-md mx-auto mt-1">
-                  Muestra este QR a tus cajeros o ayudantes desde su dispositivo de caja para sincronizar los {products.length} productos automáticamente.
-                </p>
-
-                <div className="my-8 flex justify-center">
-                  <div className="bg-white p-6 border-2 border-dashed border-[#002A5C] rounded-3xl shadow-md relative">
-                    <div className="w-56 h-56 bg-slate-50 border border-gray-100 rounded-2xl flex items-center justify-center p-4">
-                      <OwnerInviteQrCode inviteCode={ownerInviteCode} size={180} />
-                    </div>
-                    <span className="absolute -bottom-3 left-1/2 transform -translate-x-1/2 bg-[#00B8D9] text-[#002A5C] text-[9px] font-black px-3 py-1 rounded-full uppercase shadow">
-                      VINCULADOR SEGURO
-                    </span>
-                  </div>
-                </div>
-
-                {ownerInviteCode && (
-                  <p className="text-[10px] text-gray-400 font-mono mb-4">
-                    Código: {ownerInviteCode}
-                  </p>
-                )}
-
-                <div className="bg-[#f9f9ff] text-left p-4 rounded-xl border space-y-2 max-w-md mx-auto">
-                  <p className="text-xs font-bold text-[#081b38] uppercase">Vinculación de Cajas Rápidas:</p>
-                  <ol className="text-xs text-gray-500 list-decimal pl-4 space-y-1">
-                    <li>Abre Venpro en la tablet o teléfono de caja de tu colaborador.</li>
-                    <li>Selecciona &quot;Soy un empleado&quot; y completa tu registro.</li>
-                    <li>Escanea este código QR para vincular tu cuenta al negocio.</li>
-                  </ol>
-                </div>
-              </div>
+              <OwnerInviteQrPanel
+                organizationId={organizationId}
+                isSupabaseEnabled={isSupabaseEnabled}
+                businessName={config.storeName}
+              />
             </motion.div>
           )}
 
