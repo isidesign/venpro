@@ -11,7 +11,13 @@ import {
   isSupabaseConfigured,
   fetchUserProfile,
 } from '@/services/authService';
-import { createOrganizationWithDatabase, loadOrganizationData, validateInviteCode } from '@/services/organizationService';
+import {
+  createOrganizationWithDatabase,
+  fetchOrganizationBootstrapByInviteCode,
+  loadOrganizationData,
+  validateInviteCode,
+  type OrganizationData,
+} from '@/services/organizationService';
 import { parseInviteCodeFromQr, ensureLocalInviteCode } from '@/lib/inviteQr';
 import {
   sendVerificationCode,
@@ -86,14 +92,25 @@ export default function LoginScreen({
   const pendingEmployeeRegistrationRef = useRef(pendingEmployeeRegistration);
   pendingEmployeeRegistrationRef.current = pendingEmployeeRegistration;
 
-  const completeEmployeeRegistration = async (inviteCode: string) => {
+  const completeEmployeeRegistration = async (inviteCode: string, organizationId: string) => {
     const pending = pendingEmployeeRegistrationRef.current;
     if (!pending) {
       throw new AuthError('No hay datos de registro pendientes. Vuelve atrás e intenta de nuevo.');
     }
 
+    let orgData: OrganizationData | null = null;
+    try {
+      orgData = await fetchOrganizationBootstrapByInviteCode(inviteCode, organizationId);
+    } catch (err) {
+      if (!isSupabaseConfigured) {
+        throw err instanceof AuthError
+          ? err
+          : new AuthError('No se pudo cargar el inventario del negocio.');
+      }
+    }
+
     if (isSupabaseConfigured) {
-      const { user, organizationId } = await signUpEmployee({
+      const { user } = await signUpEmployee({
         email: pending.email,
         password: pending.password,
         fullName: pending.name,
@@ -106,20 +123,17 @@ export default function LoginScreen({
       }
 
       await refreshProfile();
-      if (organizationId) {
-        const orgData = await loadOrganizationData(organizationId);
-        if (orgData) {
-          onOrganizationBootstrap?.({
-            products: orgData.products,
-            sales: orgData.sales,
-            transactions: orgData.transactions,
-            config: orgData.config,
-            industry: orgData.industry,
-            inviteCode: orgData.inviteCode,
-          });
-        }
+
+      if (!orgData && organizationId !== 'local') {
+        orgData = await loadOrganizationData(organizationId);
       }
     } else {
+      if (!orgData) {
+        throw new AuthError(
+          'No se pudo cargar el inventario del negocio en este dispositivo. Usa el mismo navegador que el propietario o configura Supabase en .env.local.',
+        );
+      }
+
       localStorage.setItem('venpro_invite_code', inviteCode.toLowerCase());
 
       const currentEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
@@ -132,8 +146,23 @@ export default function LoginScreen({
       localStorage.setItem('venpro_employees', JSON.stringify(currentEmployees));
     }
 
+    if (!orgData) {
+      throw new AuthError(
+        'No se pudo cargar el inventario del negocio. Verifica que el QR sea el actual y que Supabase tenga las migraciones aplicadas.',
+      );
+    }
+
+    onOrganizationBootstrap?.({
+      products: orgData.products,
+      sales: orgData.sales,
+      transactions: orgData.transactions,
+      config: orgData.config,
+      industry: orgData.industry,
+      inviteCode: orgData.inviteCode,
+    });
+
     setPendingEmployeeRegistration(null);
-    onLoginSuccess({ skipRehydrate: isSupabaseConfigured });
+    onLoginSuccess({ skipRehydrate: true });
   };
 
   const handleEmployeeQrScanned = async (decodedText: string) => {
@@ -168,7 +197,7 @@ export default function LoginScreen({
 
       setTimeout(async () => {
         try {
-          await completeEmployeeRegistration(inviteCode);
+          await completeEmployeeRegistration(inviteCode, organizationId);
         } catch (err) {
           setIsScanned(false);
           employeeScannedRef.current = false;
@@ -554,6 +583,22 @@ export default function LoginScreen({
         }
 
         await refreshProfile();
+
+        if (role === 'employee' && profile.organizationId) {
+          const orgData = await loadOrganizationData(profile.organizationId);
+          if (orgData) {
+            onOrganizationBootstrap?.({
+              products: orgData.products,
+              sales: orgData.sales,
+              transactions: orgData.transactions,
+              config: orgData.config,
+              industry: orgData.industry,
+              inviteCode: orgData.inviteCode,
+            });
+            onLoginSuccess({ skipRehydrate: true });
+            return;
+          }
+        }
       } else if (role === 'employee') {
         const storedEmployees = JSON.parse(localStorage.getItem('venpro_employees') || '[]');
         const matched = storedEmployees.find((emp: { email: string; password: string }) => emp.email === email && emp.password === password);

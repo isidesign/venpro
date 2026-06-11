@@ -3,6 +3,7 @@ import { getIndustrySeedData } from '@/data/industrySeeds';
 import type { IndustryType, Product, Sale, StockTransaction, StoreConfig } from '@/types';
 import { parseIndustry } from '@/lib/industry';
 import { ensureLocalInviteCode, generateInviteCode, isValidInviteCodeFormat } from '@/lib/inviteQr';
+import { STORAGE_KEYS } from '@/constants/storage';
 import { AuthError } from '@/services/authService';
 
 export interface CreateOrganizationParams {
@@ -30,6 +31,87 @@ function requireSupabase() {
     throw new AuthError('Supabase no está configurado.');
   }
   return supabase;
+}
+
+function readOptionalJson<T>(key: string): T | null {
+  const raw = localStorage.getItem(key);
+  if (!raw) return null;
+
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return null;
+  }
+}
+
+function mapBootstrapPayload(data: unknown): OrganizationData | null {
+  if (!data || typeof data !== 'object') return null;
+
+  const payload = data as {
+    organizationId?: string;
+    inviteCode?: string;
+    industry?: string;
+    config?: StoreConfig;
+    products?: Product[];
+    sales?: Sale[];
+    transactions?: StockTransaction[];
+  };
+
+  if (!payload.organizationId || !payload.inviteCode || !payload.config) return null;
+
+  return {
+    organizationId: payload.organizationId,
+    inviteCode: payload.inviteCode,
+    industry: parseIndustry(payload.industry),
+    products: payload.products ?? [],
+    sales: payload.sales ?? [],
+    transactions: payload.transactions ?? [],
+    config: payload.config,
+  };
+}
+
+export function loadLocalOrganizationSnapshot(inviteCode: string): OrganizationData | null {
+  const normalized = inviteCode.trim().toLowerCase();
+  const storedCode = localStorage.getItem('venpro_invite_code')?.trim().toLowerCase();
+  if (storedCode !== normalized) return null;
+
+  const products = readOptionalJson<Product[]>(STORAGE_KEYS.products);
+  const sales = readOptionalJson<Sale[]>(STORAGE_KEYS.sales);
+  const transactions = readOptionalJson<StockTransaction[]>(STORAGE_KEYS.transactions);
+  const config = readOptionalJson<StoreConfig>(STORAGE_KEYS.config);
+
+  if (!products || !sales || !transactions || !config) return null;
+
+  return {
+    organizationId: 'local',
+    inviteCode: normalized,
+    industry: parseIndustry(localStorage.getItem(STORAGE_KEYS.industry)),
+    products,
+    sales,
+    transactions,
+    config,
+  };
+}
+
+export async function fetchOrganizationBootstrapByInviteCode(
+  inviteCode: string,
+  organizationId: string | null = null,
+): Promise<OrganizationData | null> {
+  const normalized = inviteCode.trim().toLowerCase();
+
+  if (supabase) {
+    const { data, error } = await supabase.rpc('fetch_organization_bootstrap_by_invite_code', {
+      code: normalized,
+    });
+
+    if (error) {
+      throw new AuthError(error.message);
+    }
+
+    return mapBootstrapPayload(data);
+  }
+
+  return loadLocalOrganizationSnapshot(normalized);
 }
 
 export async function validateInviteCode(code: string): Promise<string | null> {

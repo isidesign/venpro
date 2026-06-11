@@ -78,8 +78,10 @@ export function useVenproStorage() {
   }, [loadFromLocal]);
 
   useEffect(() => {
-    if (organizationId && isSupabaseEnabled) {
-      loadFromSupabase(organizationId).catch(() => loadFromLocal());
+    if (isSupabaseEnabled) {
+      if (organizationId) {
+        loadFromSupabase(organizationId).catch(() => loadFromLocal());
+      }
       return;
     }
     loadFromLocal();
