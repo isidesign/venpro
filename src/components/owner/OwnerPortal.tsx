@@ -23,6 +23,7 @@ import ClothingProductFields from '@/components/products/ClothingProductFields';
 import { CLOTHING_CATEGORIES } from '@/data/clothingCatalog';
 import OwnerInviteQrPanel from '@/components/owner/OwnerInviteQrPanel';
 import VenproWordmark, { VENPRO_LOGO_SRC } from '@/components/brand/VenproWordmark';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 import { getIndustryWelcomeSubtitle } from '@/lib/industry';
 import { useVenproAuth } from '@/contexts/VenproAuthContext';
 import { COUNTRY_PHONE_CODES, formatRegistrationPhone, parseStoredPhone } from '@/lib/phone';
@@ -866,7 +867,7 @@ export default function OwnerPortal({
     const formatCost = (val: number) => `${config.currencySymbol}${val.toFixed(3)}`;
 
     return (
-      <div className="min-h-screen bg-[#F4F7FA] text-[#081b38] flex flex-col relative pb-32 font-sans applet-embed">
+      <div className="min-h-dvh bg-[#F4F7FA] text-[#081b38] flex flex-col font-sans applet-embed">
         
         {/* Success Toast */}
         {showSuccessToast && (
@@ -896,7 +897,7 @@ export default function OwnerPortal({
         </header>
 
         {/* Main layout */}
-        <main className="max-w-[1440px] mx-auto w-full px-4 md:px-8 mt-8 grid grid-cols-1 lg:grid-cols-12 gap-6 flex-grow pb-16">
+        <main className="flex-1 min-h-0 overflow-y-auto mobile-scroll-main max-w-[1440px] mx-auto w-full px-4 md:px-8 mt-4 md:mt-8 grid grid-cols-1 lg:grid-cols-12 gap-6 pb-4">
           {/* Left Column */}
           <div className="lg:col-span-7 flex flex-col gap-6">
             
@@ -1127,7 +1128,7 @@ export default function OwnerPortal({
         </main>
 
         {/* Bottom Action Bar */}
-        <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-[#c4c6d1] px-6 py-4 flex flex-col md:flex-row items-center justify-between gap-4 z-40 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] font-sans">
+        <div className="mobile-form-footer-solid px-4 py-3 md:px-6 md:py-4 flex flex-col md:flex-row items-center justify-between gap-4 shadow-[0_-4px_10px_rgba(0,0,0,0.05)] font-sans">
           <div className="hidden md:flex flex-col">
             <p className="font-bold text-[#081b38] text-sm">Costo Total Estimado</p>
             <p className="text-xl md:text-2xl font-bold text-[#001636]">
@@ -1237,7 +1238,11 @@ export default function OwnerPortal({
           ))}
         </nav>
 
-        <div className="p-4 border-t border-white/10 shrink-0 mt-auto">
+        <div className="p-4 border-t border-white/10 shrink-0 mt-auto space-y-2">
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Apariencia</span>
+            <ThemeToggle variant="header" className="w-9 h-9" />
+          </div>
           <button
             type="button"
             onClick={() => {
@@ -1268,11 +1273,14 @@ export default function OwnerPortal({
             </button>
             <VenproWordmark className="text-lg" />
           </div>
-          <img
-            src={VENPRO_LOGO_SRC}
-            alt="Venpro"
-            className="w-8 h-8 object-contain shrink-0"
-          />
+          <div className="flex items-center gap-2 shrink-0">
+            <ThemeToggle variant="header" className="w-9 h-9" />
+            <img
+              src={VENPRO_LOGO_SRC}
+              alt="Venpro"
+              className="w-8 h-8 object-contain shrink-0"
+            />
+          </div>
         </header>
 
         <main className="flex-1 pt-14 lg:pt-0 pb-8 bg-[#f9f9ff] w-full">

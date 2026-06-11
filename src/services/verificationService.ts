@@ -40,6 +40,33 @@ function getLocalVerification(): StoredVerification | null {
   }
 }
 
+function mapSupabaseOtpError(message: string, method: VerificationMethod): string {
+  const lower = message.toLowerCase();
+
+  if (method === 'sms') {
+    return 'El SMS requiere configurar un proveedor en Supabase (Authentication > Phone, p. ej. Twilio).';
+  }
+
+  if (lower.includes('rate limit') || lower.includes('too many')) {
+    return 'Demasiados intentos. Espera unos minutos antes de reenviar el código.';
+  }
+
+  if (
+    lower.includes('smtp') ||
+    lower.includes('mail') ||
+    lower.includes('email provider') ||
+    lower.includes('sending')
+  ) {
+    return 'No se pudo enviar el correo. En Supabase activa Authentication > Providers > Email y, si hace falta, SMTP en Project Settings > Authentication.';
+  }
+
+  if (lower.includes('signup') || lower.includes('sign up')) {
+    return 'El registro por correo no está habilitado en Supabase. Activa Email en Authentication > Providers.';
+  }
+
+  return `No se pudo enviar el código: ${message}`;
+}
+
 export function formatPhoneE164(countryCode: string, phoneNumber: string): string {
   const digits = phoneNumber.replace(/\D/g, '');
   const code = countryCode.replace(/\D/g, '');
@@ -101,27 +128,32 @@ export async function sendVerificationCode(params: {
   }
 
   if (isSupabaseConfigured && supabase) {
-    const otpParams =
+    const { error } = await supabase.auth.signInWithOtp(
       method === 'email'
-        ? { email: destination }
-        : { phone: destination };
+        ? {
+            email: destination,
+            options: { shouldCreateUser: true },
+          }
+        : {
+            phone: destination,
+            options: { shouldCreateUser: true, channel: 'sms' },
+          },
+    );
 
-    const { error } = await supabase.auth.signInWithOtp({
-      ...otpParams,
-      options: { shouldCreateUser: true },
+    if (error) {
+      throw new VerificationError(mapSupabaseOtpError(error.message, method));
+    }
+
+    saveLocalVerification({
+      code: '',
+      method,
+      destination,
+      expiresAt: Date.now() + CODE_EXPIRY_MS,
+      sentAt: Date.now(),
+      supabaseOtp: true,
     });
 
-    if (!error) {
-      saveLocalVerification({
-        code: '',
-        method,
-        destination,
-        expiresAt: Date.now() + CODE_EXPIRY_MS,
-        sentAt: Date.now(),
-        supabaseOtp: true,
-      });
-      return { destination, method, usedSupabase: true };
-    }
+    return { destination, method, usedSupabase: true };
   }
 
   const code = generateCode();
@@ -194,3 +226,5 @@ export async function verifyVerificationCode(params: {
 export function clearVerificationState(): void {
   sessionStorage.removeItem(STORAGE_KEY);
 }
+
+export { isSupabaseConfigured };

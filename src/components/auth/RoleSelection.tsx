@@ -2,6 +2,7 @@ import React from 'react';
 import { motion } from 'motion/react';
 import { Shield, User, ArrowRight, Building2, ClipboardCheck } from 'lucide-react';
 import VenproWordmark from '@/components/brand/VenproWordmark';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 
 interface RoleSelectionProps {
   onSelectRole: (role: 'owner' | 'employee') => void;
@@ -11,10 +12,11 @@ export default function RoleSelection({ onSelectRole }: RoleSelectionProps) {
   return (
     <div className="min-h-screen bg-[#f9f9ff] text-[#081b38] flex flex-col overflow-x-hidden relative">
       {/* Top Banner (Header) */}
-      <header className="bg-[#002A5C] border-b border-[#c4c6d1] flex items-center w-full px-6 md:px-8 h-16 z-50 shadow-md">
+      <header className="bg-[#002A5C] border-b border-[#c4c6d1] flex items-center justify-between w-full px-6 md:px-8 h-16 z-50 shadow-md">
         <div className="flex items-center gap-4">
           <VenproWordmark className="text-xl md:text-2xl" />
         </div>
+        <ThemeToggle variant="header" />
       </header>
 
       {/* Main Container */}

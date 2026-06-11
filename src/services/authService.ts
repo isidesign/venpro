@@ -37,6 +37,31 @@ export async function signUpOwner(params: {
   return data;
 }
 
+export async function ensureOwnerAccountAfterVerification(params: {
+  email: string;
+  password: string;
+  fullName: string;
+}) {
+  const client = requireSupabase();
+  const normalizedEmail = params.email.trim().toLowerCase();
+  const { data: sessionData } = await client.auth.getSession();
+  const sessionUser = sessionData.session?.user;
+
+  if (sessionUser && sessionUser.email?.toLowerCase() === normalizedEmail) {
+    const { data, error } = await client.auth.updateUser({
+      password: params.password,
+      data: { full_name: params.fullName },
+    });
+
+    if (error) throw new AuthError(error.message);
+    if (!data.user) throw new AuthError('No se pudo completar la cuenta del propietario.');
+
+    return { user: data.user };
+  }
+
+  return signUpOwner(params);
+}
+
 export async function signUpEmployee(params: {
   email: string;
   password: string;

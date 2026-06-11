@@ -10,6 +10,7 @@ import {
 import { Product, Sale, SaleItem, StockTransaction, StoreConfig, IndustryType } from '@/types';
 import { getIndustryWelcomeSubtitle, getIndustryCatalogSubtitle } from '@/lib/industry';
 import VenproWordmark from '@/components/brand/VenproWordmark';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 
 interface EmployeePortalProps {
   products: Product[];
@@ -701,7 +702,7 @@ export default function EmployeePortal({
   };
 
   return (
-    <div className="bg-[#f9f9ff] text-[#081b38] font-sans min-h-screen flex flex-col antialiased">
+    <div className="bg-[#f9f9ff] text-[#081b38] font-sans min-h-dvh flex flex-col antialiased">
       
       {/* Top Bar: Dark Navy blue header with title & Profile elements */}
       <header className="fixed top-0 left-0 right-0 z-50 h-16 bg-[#002a5c] flex justify-between items-center px-4 md:px-8 w-full border-b border-white/10 shadow-md">
@@ -751,7 +752,8 @@ export default function EmployeePortal({
             </button>
           </nav>
         </div>
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-3 md:gap-4">
+          <ThemeToggle variant="header" className="w-9 h-9 md:w-10 md:h-10" />
           {/* Profile name on desktop */}
           <div className="hidden md:flex flex-col text-right">
             <span className="text-xs font-bold text-slate-300">Carlos Méndez</span>
@@ -777,7 +779,7 @@ export default function EmployeePortal({
       <div className="w-full flex-grow flex pt-16 relative">
         
         {/* Content canvas container */}
-        <main className="flex-grow min-h-[calc(100vh-4rem)] bg-[#f9f9ff] flex flex-col pb-24 md:pb-8">
+        <main className="flex-1 min-h-0 overflow-y-auto mobile-scroll-main bg-[#f9f9ff] flex flex-col pb-24 md:pb-8">
           <div className="max-w-[1440px] w-full mx-auto p-4 md:p-8 flex-grow">
             
             <AnimatePresence mode="wait">
@@ -2234,7 +2236,7 @@ export default function EmployeePortal({
         </main>
 
         {/* BottomNavBar (Mobile Only matching attached bottom navigator) */}
-        <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#002a5c] flex justify-around items-center px-4 md:hidden border-t border-white/10 shadow-lg z-50">
+        <nav className="fixed bottom-0 left-0 right-0 h-16 bg-[#002a5c] flex justify-around items-center px-4 md:hidden border-t border-white/10 shadow-lg z-50 mobile-bottom-nav">
           <button
             onClick={() => setActiveTab('dashboard')}
             className={`flex flex-col items-center justify-center rounded-xl p-2 transition active:scale-90 ${
@@ -2277,7 +2279,7 @@ export default function EmployeePortal({
         {/* Floating Action Button on mobile matching GOURMET design */}
         <button 
           onClick={openAddModal}
-          className="md:hidden fixed bottom-20 right-5 w-14 h-14 rounded-full bg-[#00B8D9] text-white shadow-xl flex items-center justify-center active:scale-90 transition-transform z-40 hover:brightness-115"
+          className="md:hidden fixed mobile-fab-offset right-5 w-14 h-14 rounded-full bg-[#00B8D9] text-white shadow-xl flex items-center justify-center active:scale-90 transition-transform z-40 hover:brightness-115"
         >
           <Plus size={24} />
         </button>

@@ -4,6 +4,7 @@ export const STORAGE_KEYS = {
   transactions: 'venpro_transactions',
   config: 'venpro_config',
   industry: 'venpro_industry',
+  theme: 'venpro_theme',
   ownerProfileName: 'ownerProfileName',
   ownerProfileImage: 'ownerProfileImage',
   ownerProfileEmail: 'ownerProfileEmail',

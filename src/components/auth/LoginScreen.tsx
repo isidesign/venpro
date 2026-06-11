@@ -5,7 +5,7 @@ import { Html5Qrcode } from 'html5-qrcode';
 import { useVenproAuth } from '@/contexts/VenproAuthContext';
 import {
   signIn,
-  signUpOwner,
+  ensureOwnerAccountAfterVerification,
   signUpEmployee,
   AuthError,
   isSupabaseConfigured,
@@ -32,6 +32,7 @@ import { getIndustryDefaultConfig, getIndustryDefaultStoreName } from '@/lib/ind
 import type { IndustryType, Product, Sale, StockTransaction, StoreConfig } from '@/types';
 import { STORAGE_KEYS, clearVenproLocalData } from '@/constants/storage';
 import VenproWordmark from '@/components/brand/VenproWordmark';
+import ThemeToggle from '@/components/theme/ThemeToggle';
 import {
   COUNTRY_PHONE_CODES,
   formatRegistrationPhone,
@@ -716,7 +717,7 @@ export default function LoginScreen({
 
     try {
       if (isSupabaseConfigured) {
-        const { user } = await signUpOwner({
+        const { user } = await ensureOwnerAccountAfterVerification({
           email: regEmail,
           password: regPassword,
           fullName: regName,
@@ -784,7 +785,7 @@ export default function LoginScreen({
   };
 
   const renderIdentityVerification = () => (
-    <main className="flex-grow flex flex-col items-center py-12 px-6 md:px-12 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in font-sans">
+    <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-center py-6 md:py-12 px-4 md:px-12 relative bento-pattern bg-[#f9f9ff] animate-fade-in font-sans">
       <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#22d3ee]/5 rounded-full blur-3xl pointer-events-none" />
       <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
 
@@ -873,11 +874,11 @@ export default function LoginScreen({
           </div>
         )}
 
-        {demoVerificationCode && (
+        {demoVerificationCode && !isSupabaseConfigured && (
           <div className="flex items-start gap-2 p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-sm">
             <Info size={18} className="shrink-0 mt-0.5" />
             <span>
-              Sin proveedor de envío configurado. Usa este código de prueba:{' '}
+              Modo demo sin Supabase. Usa este código de prueba:{' '}
               <strong className="font-mono tracking-widest">{demoVerificationCode}</strong>
             </span>
           </div>
@@ -961,7 +962,7 @@ export default function LoginScreen({
 
   if (showEmployeeQRScanner) {
     return (
-      <div className="min-h-screen bg-[#f9f9ff] text-[#081b38] flex flex-col relative font-sans">
+      <div className="min-h-dvh bg-[#f9f9ff] text-[#081b38] flex flex-col relative font-sans">
         <style dangerouslySetInnerHTML={{__html: `
           @keyframes scan_laser {
             0% { top: 0%; opacity: 0; }
@@ -1098,7 +1099,7 @@ export default function LoginScreen({
   }
 
   return (
-    <div className="min-h-screen bg-[#f9f9ff] text-[#081b38] flex flex-col relative font-sans">
+    <div className="min-h-dvh bg-[#f9f9ff] text-[#081b38] flex flex-col relative font-sans">
       {/* Target CSS Selector matching header for branding persistence depending on wizard */}
       {currentStep === 0 ? (
         <header className="w-full bg-[#002A5C] py-4 px-6 md:px-16 flex items-center justify-between shadow-md z-50">
@@ -1112,12 +1113,13 @@ export default function LoginScreen({
             </button>
             <VenproWordmark className="text-2xl" />
           </div>
+          <ThemeToggle variant="header" />
         </header>
       ) : (
         <header className="w-full h-16 bg-[#002a5c] flex justify-between items-center px-6 md:px-12 shadow-md z-50 animate-fade-in sticky top-0">
           <VenproWordmark className="text-2xl" />
-          <div className="flex items-center gap-4">
-            <span className="text-[11px] font-bold text-white tracking-tight uppercase font-sans">
+          <div className="flex items-center gap-3">
+            <span className="text-[11px] font-bold text-white tracking-tight uppercase font-sans hidden sm:inline">
               {currentStep === 1
                 ? 'PASO 1 DE 4'
                 : currentStep === 2
@@ -1138,6 +1140,7 @@ export default function LoginScreen({
                 }}
               />
             </div>
+            <ThemeToggle variant="header" />
           </div>
         </header>
       )}
@@ -1147,7 +1150,7 @@ export default function LoginScreen({
         isRegisterMode ? (
           role === 'employee' ? (
             /* REGISTRO DE EMPLEADO (EXACT HTML LOOK AND FEEL) */
-            <main className="flex-grow flex flex-col items-center justify-center p-6 md:p-8 z-10 font-sans animate-fade-in">
+            <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-stretch md:items-center md:justify-center p-4 py-6 md:p-8 z-10 font-sans animate-fade-in">
               <div className="w-full max-w-lg">
                 {/* Welcome Header */}
                 <div className="mb-6 text-center md:text-left">
@@ -1160,7 +1163,7 @@ export default function LoginScreen({
                   initial={{ opacity: 0, scale: 0.97, y: 15 }}
                   animate={{ opacity: 1, scale: 1, y: 0 }}
                   transition={{ duration: 0.35, ease: 'easeOut' }}
-                  className="bg-white border border-[#c4c6d1] p-6 md:p-8 rounded-xl shadow-sm relative"
+                  className="bg-white border border-[#c4c6d1] p-5 md:p-8 rounded-2xl shadow-sm relative"
                   id="register-card"
                 >
                   {error && (
@@ -1344,12 +1347,12 @@ export default function LoginScreen({
             </main>
           ) : (
             /* REGISTRO DE NEGOCIO (OWNER REGISTER MODE) */
-            <main className="flex-grow flex items-center justify-center p-6 md:p-8 z-10 animate-fade-in">
+            <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-stretch md:items-center md:justify-center p-4 py-6 md:p-8 z-10 animate-fade-in">
               <motion.div
                 initial={{ opacity: 0, scale: 0.97, y: 15 }}
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 transition={{ duration: 0.35, ease: 'easeOut' }}
-                className="bg-white border border-[#d2d4dc] rounded-2xl shadow-xl max-w-md w-full p-8 md:p-10 relative"
+                className="bg-white border border-[#d2d4dc] rounded-2xl shadow-xl max-w-md w-full p-6 md:p-10 relative"
                 id="register-card"
               >
                 <div className="mb-6 text-left">
@@ -1612,7 +1615,7 @@ export default function LoginScreen({
           )
         ) : (
           /* Login Mode Form - styled perfectly to match */
-          <main className="flex-grow flex items-center justify-center p-6 md:p-8 z-10 animate-fade-in">
+          <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-stretch md:items-center md:justify-center p-4 py-6 md:p-8 z-10 animate-fade-in">
             <motion.div
               initial={{ opacity: 0, scale: 0.97, y: 15 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
@@ -1772,7 +1775,7 @@ export default function LoginScreen({
 
       {/* Step 1: Configura tu negocio (Mockup image based) */}
       {currentStep === 1 && (
-        <main className="flex-grow flex items-center justify-center px-4 py-8 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
+        <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-center justify-start md:justify-center px-4 py-6 md:py-8 relative bento-pattern bg-[#f9f9ff] animate-fade-in">
           {/* Background decorative elements */}
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#64FFB1]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
@@ -1871,7 +1874,7 @@ export default function LoginScreen({
 
       {/* Step 2: Estructura de tu Negocio */}
       {currentStep === 2 && (
-        <main className="flex-grow flex flex-col items-center py-12 px-margin-mobile relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
+        <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-center py-8 md:py-12 px-4 relative bento-pattern bg-[#f9f9ff] animate-fade-in">
           {/* Background decorative elements */}
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#22d3ee]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001c0e]/5 rounded-full blur-3xl pointer-events-none" />
@@ -2006,7 +2009,7 @@ export default function LoginScreen({
       {/* Step 3: Gestiona tu Equipo / Sucursales (mediana y sucursales) */}
       {currentStep === 3 && businessStructure !== 'autonomo' && (
         businessStructure === 'sucursales' ? (
-          <div className="flex-grow flex min-h-[calc(100vh-4rem)] text-[#081b38] bg-[#f9f9ff] font-sans relative">
+          <div className="flex flex-1 min-h-0 flex-col bg-[#f9f9ff] font-sans md:flex-row">
             {/* Sidebar Left */}
             <aside className="hidden md:flex flex-col w-64 bg-[#001636]/90 border-r border-white/5 h-[calc(100vh-4rem)] sticky top-16 shrink-0 text-white z-20">
                <div className="p-6 flex items-center gap-3 border-b border-white/10">
@@ -2038,8 +2041,9 @@ export default function LoginScreen({
                </nav>
             </aside>
 
+            <div className="flex flex-1 min-h-0 flex-col">
             {/* Main Content Pane */}
-            <main className="flex-grow p-6 md:p-12 overflow-y-auto pb-32">
+            <main className="flex-1 overflow-y-auto mobile-scroll-main p-4 md:p-12">
               <div className="max-w-4xl mx-auto space-y-8 animate-fade-in">
                 {/* Section Header exactly matching HTML spec */}
                 <div className="space-y-2 text-center">
@@ -2111,7 +2115,7 @@ export default function LoginScreen({
             </main>
 
             {/* Bottom Action Footer bar matching the HTML layout */}
-            <div className="fixed left-0 bottom-0 w-full px-6 py-4 bg-white border-t border-slate-100 flex items-center justify-center gap-4 z-40">
+            <div className="mobile-form-footer-solid px-4 py-3 md:px-6 md:py-4 flex items-center justify-center gap-3 md:gap-4 shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
               <button 
                 type="button"
                 onClick={() => {
@@ -2131,6 +2135,7 @@ export default function LoginScreen({
               >
                 <span>Continuar</span>
               </button>
+            </div>
             </div>
 
             {/* Modal for Add Manager */}
@@ -2219,7 +2224,7 @@ export default function LoginScreen({
             )}
           </div>
         ) : (
-          <div className="flex-grow flex min-h-[calc(100vh-4rem)] text-[#081b38] bg-[#f9f9ff] font-sans relative">
+          <div className="flex flex-1 min-h-0 flex-col bg-[#f9f9ff] font-sans md:flex-row">
             {/* Sidebar Left */}
             <aside className="hidden md:flex flex-col w-64 bg-[#001636]/90 border-r border-white/5 h-[calc(100vh-4rem)] sticky top-16 shrink-0 text-white z-20">
                <div className="p-6 flex items-center gap-3 border-b border-white/10">
@@ -2250,8 +2255,9 @@ export default function LoginScreen({
                </nav>
             </aside>
 
+            <div className="flex flex-1 min-h-0 flex-col">
             {/* Main Content Pane */}
-            <main className="flex-grow p-6 md:p-12 overflow-y-auto pb-32">
+            <main className="flex-1 overflow-y-auto mobile-scroll-main p-4 md:p-12">
               <div className="max-w-4xl mx-auto space-y-8 animate-fade-in">
                 {/* Section Header */}
                 <div className="space-y-2 text-center">
@@ -2382,7 +2388,7 @@ export default function LoginScreen({
             </main>
 
             {/* Bottom Action Footer bar matching the HTML design precisely */}
-            <div className="fixed left-0 bottom-0 w-full px-6 py-4 bg-white border-t border-slate-100 flex items-center justify-center gap-4 z-40">
+            <div className="mobile-form-footer-solid px-4 py-3 md:px-6 md:py-4 flex items-center justify-center gap-3 md:gap-4 shadow-[0_-4px_16px_rgba(0,0,0,0.06)]">
               <button 
                 type="button"
                 onClick={() => {
@@ -2405,6 +2411,7 @@ export default function LoginScreen({
                 <span>Continuar</span>
               </button>
             </div>
+            </div>
           </div>
         )
       )}
@@ -2414,7 +2421,7 @@ export default function LoginScreen({
 
       {/* Step 5: Detalles de Facturación & Propiedades */}
       {currentStep === 5 && (
-        <main className="flex-grow flex items-center justify-center px-4 py-8 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
+        <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-center justify-start md:justify-center px-4 py-6 md:py-8 relative bento-pattern bg-[#f9f9ff] animate-fade-in">
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#64FFB1]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
           
@@ -2489,7 +2496,7 @@ export default function LoginScreen({
 
       {/* Step 6: PIN / Seguridad */}
       {currentStep === 6 && (
-        <main className="flex-grow flex items-center justify-center px-4 py-8 relative overflow-hidden bento-pattern bg-[#f9f9ff] animate-fade-in">
+        <main className="flex-1 overflow-y-auto mobile-scroll-main flex flex-col items-center justify-start md:justify-center px-4 py-6 md:py-8 relative bento-pattern bg-[#f9f9ff] animate-fade-in">
           <div className="absolute -top-24 -right-24 w-96 h-96 bg-[#64FFB1]/5 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-96 h-96 bg-[#001636]/5 rounded-full blur-3xl pointer-events-none" />
           

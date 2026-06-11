@@ -5,9 +5,11 @@ import EmployeePortal from '@/components/employee/EmployeePortal';
 import LoginScreen from '@/components/auth/LoginScreen';
 import { VenproAuthProvider, useVenproAuth } from '@/contexts/VenproAuthContext';
 import { useVenproStorage } from '@/hooks/useVenproStorage';
+import { useMobileKeyboardInset } from '@/hooks/useMobileKeyboardInset';
 import { clearVenproLocalData } from '@/constants/storage';
 
 function AppContent() {
+  useMobileKeyboardInset();
   const [selectedRole, setSelectedRole] = useState<'owner' | 'employee' | null>(null);
   const [isOwnerAuthenticated, setIsOwnerAuthenticated] = useState(false);
   const [isEmployeeAuthenticated, setIsEmployeeAuthenticated] = useState(false);
@@ -59,14 +61,14 @@ function AppContent() {
 
   if (isLoading && isSupabaseEnabled) {
     return (
-      <div className="bg-[#f9f9ff] min-h-screen flex items-center justify-center text-[#002A5C] font-bold">
+      <div className="bg-[#f9f9ff] dark:bg-[#0b1220] min-h-screen flex items-center justify-center text-[#002A5C] dark:text-[#67e8f9] font-bold">
         Cargando sesión...
       </div>
     );
   }
 
   return (
-    <div className="bg-[#f9f9ff] min-h-screen">
+    <div className="bg-[#f9f9ff] dark:bg-[#0b1220] min-h-screen">
       {selectedRole === null ? (
         <RoleSelection onSelectRole={setSelectedRole} />
       ) : selectedRole === 'owner' && !isOwnerAuthenticated ? (
